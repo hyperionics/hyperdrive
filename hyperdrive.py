@@ -1,11 +1,9 @@
 from scipy.integrate import odeint
 import numpy as np
 from numpy.linalg import norm
-from numpy import subtract as sub
-from numpy import add
 import csv
 
-# Lengths in AU, times in days, masses scaled to Mass_saturn (S_M)
+# Lengths in AU, times in days, masses scaled to Mass_saturn (S_m)
 #
 # Most quantities are [Body]_[property], S being Saturn, T being Titan,
 # H being Hyperion.
@@ -14,9 +12,9 @@ import csv
 G = 8.46E-8
 
 # Masses
-S_M = 1
-T_M = 2.367E-4
-H_M = 9.8E-9
+S_m = 1
+T_m = 2.367E-4
+H_m = 9.8E-9
 
 #Initial values for the positions and velocities
 T_r_0 = [2.806386833950917E-03,
@@ -41,34 +39,20 @@ def f(y, t0):
     T_v = y[6:9]
     H_r = y[3:6]
     H_v = y[9:12]
-    TH_sep = sub(T_r, H_r)
-    T_a = [i * (G * S_M) / (T_M * norm(T_r)**3) for i in T_r]
-    H_a = add([i * (G * S_M) / (H_M * norm(H_r)**3) for i in H_r],
-        [i * (G * T_M) / (H_M * norm(TH_sep)**3) for i in TH_sep])
+    TH_sep = T_r - H_r
+    T_a = (G / T_m) * (S_m * T_r) / norm(T_r)**3
+    H_a = (G / H_m) * ((S_m * H_r)/norm(H_r)**3 + \
+          (T_m * TH_sep)/norm(TH_sep)**3)
     vec = np.concatenate((T_v, H_v, T_a, H_a))
-    print(vec.shape)
     return vec
 
 # Initial and final times and timestep
 t_i = 0
-t_f = 100
-dt = 0.2
+t_f = 16
+dt = 0.001
 
-# drive = ode(f).set_integrator('dopri5')
-# drive.set_initial_value(T_r_0 + H_r_0 + T_v_0 + H_v_0, t_i)
 
 y0 = T_r_0 + H_r_0 + T_v_0 + H_v_0
-print(len(y0))
 results = odeint(f, y0, np.arange(t_i, t_f, dt))
 
-with open('output.csv', 'w', newline='') as file:
-    out = csv.writer(file)
-    out.writerow(['t', 'Tx', 'Ty', 'Tz', 'TVx', 'TVy', 'TVz', 'Hx', 'Hy', 'Hz',
-                 'HVx', 'HVy', 'HVz', 'THsep'])
-
-np.savetxt('output.csv', results, delimiter=',')
-
-    # while drive.successful() and drive.t < t_f:
-    #     result = drive.integrate(drive.t + dt)
-    #     print(drive.t, drive.y)
-    #     out.writerow(drive.t, drive.y)
+np.savetxt('output.csv', results, fmt='%.6e', delimiter=',', header="Tx, Ty, Tz, TVx, TVy, TVz, Hx, Hy, Hz, HVx, HVy, HVz")
