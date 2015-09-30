@@ -39,10 +39,10 @@ def f(y, t0):
     T_v = y[6:9]
     H_r = y[3:6]
     H_v = y[9:12]
-    TH_sep = T_r - H_r
+    HT_sep = H_r - T_r
     T_a = (G / T_m) * (S_m * T_r) / norm(T_r)**3
     H_a = (G / H_m) * ((S_m * H_r)/norm(H_r)**3 + \
-          (T_m * TH_sep)/norm(TH_sep)**3)
+          (T_m * HT_sep)/norm(HT_sep)**3)
     vec = np.concatenate((T_v, H_v, T_a, H_a))
     return vec
 
