@@ -56,3 +56,6 @@ y0 = T_r_0 + H_r_0 + T_v_0 + H_v_0
 results = odeint(f, y0, np.arange(t_i, t_f, dt))
 
 np.savetxt('output.csv', results, fmt='%.6e', delimiter=',', header="Tx, Ty, Tz, TVx, TVy, TVz, Hx, Hy, Hz, HVx, HVy, HVz")
+plt.plot(r[:,0], r[:,1], r[:,6], r[:,7])
+plt.axis([-.01, .01, -.01, .01])
+plt.show()
