@@ -34,6 +34,7 @@ H_m = 9.8E-9
 #          -2.119021187924069E-03,
 #          8.963067229904581E-04]
 
+# Initials used by Sinclair et al.
 T_r_0 = [-0.0075533871, 0.0025250254, -0.0000462204]
 T_v_0 = [-0.0010017342, -0.0031443009, 0.0000059503]
 H_r_0 = [-0.0006436995, 0.0099145485, 0.0000357506]
@@ -90,19 +91,19 @@ def f(y, t0):
 
 # Initial and final times and timestep
 t_i = 0
-t_f = 160
+t_f = 320
 dt = 0.001
 t = np.arange(t_i, t_f, dt)
 
 r = odeint(f, y0, t)
 
-sep = norm(r[:,6:9]-r[:,0:3], axis=1)
+sep = norm(r[:,3:6]-r[:,0:3], axis=1)
 
 columns = "Tx, Ty, Tz, TVx, TVy, TVz, Hx, Hy, Hz, HVx, HVy, HVz"
 np.savetxt('output.csv', r, fmt='%.6e', delimiter=',', header=columns)
 
 T_e = ecc(r[:,0:3])
-H_e = ecc(r[:,6:9])
+H_e = ecc(r[:,3:6])
 print('Eccentricity of Titan: {:f}, Hyperion: {:f}'.format(T_e, H_e), '\n')
 
 # T_T = period(r[:,0:3], t)
@@ -112,8 +113,9 @@ print('Eccentricity of Titan: {:f}, Hyperion: {:f}'.format(T_e, H_e), '\n')
 # print('Ratio of periods: {:f}'.format(T_T/H_T), '\n')
 
 plt.figure(0)
-plt.plot(r[:,0], r[:,1], r[:,6], r[:,7])
-plt.axis([-.01, .01, -.01, .01])
+plt.plot(r[:,0], r[:,1], r[:,3], r[:,4])
+plt.plot(0,0, 'xr')
+plt.axis([-.02, .02, -.02, .02])
 plt.axes().set_aspect('equal')
 
 plt.figure(1)
