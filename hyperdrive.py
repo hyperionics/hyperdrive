@@ -51,17 +51,25 @@ def f(y, t0):
 
 # Initial and final times and timestep
 t_i = 0
-t_f = 16
+t_f = 160
 dt = 0.001
 t = np.arange(t_i, t_f, dt)
 
 r = odeint(f, y0, t)
 
-sep = norm(r[:,0:3]-r[:,6:9], axis=1)
+sep = norm(r[:,6:9]-r[:,0:3], axis=1)
 
 columns = "Tx, Ty, Tz, TVx, TVy, TVz, Hx, Hy, Hz, HVx, HVy, HVz"
 np.savetxt('output.csv', r, fmt='%.6e', delimiter=',', header=columns)
 
+plt.figure(0)
 plt.plot(r[:,0], r[:,1], r[:,6], r[:,7])
 plt.axis([-.01, .01, -.01, .01])
+plt.axes().set_aspect('equal')
+
+plt.figure(1)
+plt.plot(t, sep)
+plt.text(5, np.amax(sep), 'max = {:f} AU'.format(np.amax(sep)))
+plt.text(5, np.amin(sep), 'min = {:f} AU'.format(np.amin(sep)))
+
 plt.show()
