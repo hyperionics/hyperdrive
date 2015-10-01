@@ -2,14 +2,15 @@ from scipy.integrate import odeint
 import numpy as np
 from numpy.linalg import norm
 import csv
+import matplotlib.pyplot as plt
 
-# Lengths in AU, times in days, masses scaled to Mass_saturn (S_m)
+# Lengths in AU, times in days, masses scaled to saturn (S_m)
 #
 # Most quantities are [Body]_[property], S being Saturn, T being Titan,
 # H being Hyperion.
 
 # 6.67408E-11 from m^3/(kg*s^2) to AU^3/(Mass of Saturn * day^2) gives:
-G = 8.46E-8
+G = -8.46E-8
 
 # Masses
 S_m = 1
@@ -33,6 +34,8 @@ H_v_0 = [1.796218227601083E-03,
          -2.119021187924069E-03,
          8.963067229904581E-04]
 
+y0 = T_r_0 + H_r_0 + T_v_0 + H_v_0
+
 def f(y, t0):
     """Vector of Titan's velocity, Hyperion's velocity, T's acc, H's acc"""
     T_r = y[0:3]
@@ -40,8 +43,8 @@ def f(y, t0):
     H_r = y[3:6]
     H_v = y[9:12]
     HT_sep = H_r - T_r
-    T_a = (G / T_m) * (S_m * T_r) / norm(T_r)**3
-    H_a = (G / H_m) * ((S_m * H_r)/norm(H_r)**3 + \
+    T_a = G * (S_m * T_r) / norm(T_r)**3
+    H_a = G * ((S_m * H_r)/norm(H_r)**3 + \
           (T_m * HT_sep)/norm(HT_sep)**3)
     vec = np.concatenate((T_v, H_v, T_a, H_a))
     return vec
@@ -50,12 +53,15 @@ def f(y, t0):
 t_i = 0
 t_f = 16
 dt = 0.001
+t = np.arange(t_i, t_f, dt)
 
+r = odeint(f, y0, t)
 
-y0 = T_r_0 + H_r_0 + T_v_0 + H_v_0
-results = odeint(f, y0, np.arange(t_i, t_f, dt))
+sep = norm(r[:,0:3]-r[:,6:9], axis=1)
 
-np.savetxt('output.csv', results, fmt='%.6e', delimiter=',', header="Tx, Ty, Tz, TVx, TVy, TVz, Hx, Hy, Hz, HVx, HVy, HVz")
+columns = "Tx, Ty, Tz, TVx, TVy, TVz, Hx, Hy, Hz, HVx, HVy, HVz"
+np.savetxt('output.csv', r, fmt='%.6e', delimiter=',', header=columns)
+
 plt.plot(r[:,0], r[:,1], r[:,6], r[:,7])
 plt.axis([-.01, .01, -.01, .01])
 plt.show()
