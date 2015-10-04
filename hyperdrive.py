@@ -147,5 +147,11 @@ seps.plot(t, sep)
 seps.text(5, np.amax(sep), 'max = {:f} AU'.format(np.amax(sep)))
 seps.text(5, np.amin(sep), 'min = {:f} AU'.format(np.amin(sep)))
 
+info = plt.subplot(grid[0:-1, -1])
+info.set_title('Info')
+info.set_xticks([])
+info.set_yticks([])
+table = r'\begin{{tabular}}{{rl}}Hyperion e & {}\\ Titan e & {}\end{{tabular}}'.format('1', '2')
+info.text(0.1, 0.8, table, fontsize=16)
 
 plt.show()
