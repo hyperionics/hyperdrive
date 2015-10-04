@@ -3,6 +3,9 @@ import numpy as np
 from numpy.linalg import norm
 import csv
 import matplotlib.pyplot as plt
+import matplotlib.gridspec as gs
+from itertools import repeat
+import os
 
 # Lengths in AU, times in days, masses scaled to saturn (S_m)
 #
@@ -18,27 +21,27 @@ T_m = 2.367E-4
 H_m = 9.8E-9
 
 #Initial values for the positions and velocities
-# T_r_0 = [2.806386833950917E-03,
-#          -6.729009690324418E-03,
-#          3.202694551398282E-03]
+T_r_0 = [2.806386833950917E-03,
+         -6.729009690324418E-03,
+         3.202694551398282E-03]
 
-# T_v_0 = [3.058426568747700E-03,
-#          9.550316106811974E-04,
-#          -7.900305243565329E-04]
+H_r_0 = [-7.240723412782416E-03,
+         -5.692266853965866E-03,
+         3.722613581954420E-03]
 
-# H_r_0 = [-7.240723412782416E-03,
-#          -5.692266853965866E-03,
-#          3.722613581954420E-03]
+T_v_0 = [3.058426568747700E-03,
+         9.550316106811974E-04,
+         -7.900305243565329E-04]
 
-# H_v_0 = [1.796218227601083E-03,
-#          -2.119021187924069E-03,
-#          8.963067229904581E-04]
+H_v_0 = [1.796218227601083E-03,
+         -2.119021187924069E-03,
+         8.963067229904581E-04]
 
 # Initials used by Sinclair et al.
-T_r_0 = [-0.0075533871, 0.0025250254, -0.0000462204]
-T_v_0 = [-0.0010017342, -0.0031443009, 0.0000059503]
-H_r_0 = [-0.0006436995, 0.0099145485, 0.0000357506]
-H_v_0 = [-0.0029182723, 0.0000521415, -0.0000356145]
+# T_r_0 = [-0.0075533871, 0.0025250254, -0.0000462204]
+# T_v_0 = [-0.0010017342, -0.0031443009, 0.0000059503]
+# H_r_0 = [-0.0006436995, 0.0099145485, 0.0000357506]
+# H_v_0 = [-0.0029182723, 0.0000521415, -0.0000356145]
 
 y0 = T_r_0 + H_r_0 + T_v_0 + H_v_0
 
@@ -76,6 +79,8 @@ def period(pos, times):
     assert len(crosstimes) == 3
     return crosstimes[2] - crosstimes[1]
 
+
+
 def f(y, t0):
     """Vector of Titan's velocity, Hyperion's velocity, T's acc, H's acc"""
     T_r = y[0:3]
@@ -91,36 +96,56 @@ def f(y, t0):
 
 # Initial and final times and timestep
 t_i = 0
-t_f = 320
+t_f = 160
 dt = 0.001
 t = np.arange(t_i, t_f, dt)
 
+# Perdorm the integration and assign views for each quantity to dict rr.
 r = odeint(f, y0, t)
+quants = ('T_r', 'H_r', 'T_v', 'H_v')
+longquants = ('T_x', 'T_y', 'T_z', 
+              'H_x', 'H_y', 'H_z',
+              'T_Vx', 'T_Vy', 'T_Vz'
+              'H_Vx', 'H_Vy', 'H_Vz')
+rr = dict(**{quants[i]:r[:,i*3:i*3+3] for i in range(0,len(quants))},
+    **{longquants[i]:r[:,i:i+1] for i in range(0,len(longquants))})
 
-sep = norm(r[:,3:6]-r[:,0:3], axis=1)
+# Array of separations from H to T
+sep = norm(rr['H_r']-rr['T_r'], axis=1)
 
-columns = "Tx, Ty, Tz, TVx, TVy, TVz, Hx, Hy, Hz, HVx, HVy, HVz"
-np.savetxt('output.csv', r, fmt='%.6e', delimiter=',', header=columns)
 
-T_e = ecc(r[:,0:3])
-H_e = ecc(r[:,3:6])
-print('Eccentricity of Titan: {:f}, Hyperion: {:f}'.format(T_e, H_e), '\n')
+csvhead = ",".join(longquants)
+np.savetxt('output.csv', r, fmt='%.6e', delimiter=',', header=csvhead)
+
+# T_e = ecc(r[:,0:3])
+# H_e = ecc(r[:,3:6])
+# print('Eccentricity of Titan: {:f}, Hyperion: {:f}'.format(T_e, H_e), '\n')
 
 # T_T = period(r[:,0:3], t)
-# H_T = period(r[:,6:9], t)
+# H_T = period(r[:,3:6], t)
 # print('Period of Titan: {:f} days, Hyperion: {:f} days'.format(T_T, H_T),
 #       '\n')
 # print('Ratio of periods: {:f}'.format(T_T/H_T), '\n')
 
-plt.figure(0)
-plt.plot(r[:,0], r[:,1], r[:,3], r[:,4])
-plt.plot(0,0, 'xr')
-plt.axis([-.02, .02, -.02, .02])
-plt.axes().set_aspect('equal')
+plt.rc('text', usetex=True)
+plt.rc('font', **{'family': 'serif', 'serif': ['Computer Modern']})
 
-plt.figure(1)
-plt.plot(t, sep)
-plt.text(5, np.amax(sep), 'max = {:f} AU'.format(np.amax(sep)))
-plt.text(5, np.amin(sep), 'min = {:f} AU'.format(np.amin(sep)))
+fig = plt.figure(figsize=(8,8), facecolor='white')
+fig.set_tight_layout(True)
+grid = gs.GridSpec(3, 3)
+
+orbits = plt.subplot(grid[0:2, 0:2])
+orbits.set_title('Path of simulated orbits')
+orbits.plot(rr['T_x'], rr['T_y'], rr['H_x'], rr['H_y'])
+orbits.plot(0,0, 'xr')
+orbits.axis([-.02, .02, -.02, .02])
+orbits.legend(('Titan', 'Hyperion'))
+
+seps = plt.subplot(grid[2, :])
+seps.set_title('Magnitude of separation between Titan and Hyperion')
+seps.plot(t, sep)
+seps.text(5, np.amax(sep), 'max = {:f} AU'.format(np.amax(sep)))
+seps.text(5, np.amin(sep), 'min = {:f} AU'.format(np.amin(sep)))
+
 
 plt.show()
