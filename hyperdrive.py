@@ -5,7 +5,6 @@ import csv
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gs
 from itertools import repeat
-import os
 
 # Lengths in AU, times in days, masses scaled to saturn (S_m)
 #
@@ -117,19 +116,6 @@ sep = norm(rr['H_r']-rr['T_r'], axis=1)
 csvhead = ",".join(longquants)
 np.savetxt('output.csv', r, fmt='%.6e', delimiter=',', header=csvhead)
 
-# T_e = ecc(r[:,0:3])
-# H_e = ecc(r[:,3:6])
-# print('Eccentricity of Titan: {:f}, Hyperion: {:f}'.format(T_e, H_e), '\n')
-
-# T_T = period(r[:,0:3], t)
-# H_T = period(r[:,3:6], t)
-# print('Period of Titan: {:f} days, Hyperion: {:f} days'.format(T_T, H_T),
-#       '\n')
-# print('Ratio of periods: {:f}'.format(T_T/H_T), '\n')
-
-plt.rc('text', usetex=True)
-plt.rc('font', **{'family': 'serif', 'serif': ['Computer Modern']})
-
 fig = plt.figure(figsize=(8,8), facecolor='white')
 fig.set_tight_layout(True)
 grid = gs.GridSpec(3, 3)
@@ -151,7 +137,12 @@ info = plt.subplot(grid[0:-1, -1])
 info.set_title('Info')
 info.set_xticks([])
 info.set_yticks([])
-table = r'\begin{{tabular}}{{rl}}Hyperion e & {}\\ Titan e & {}\end{{tabular}}'.format('1', '2')
-info.text(0.1, 0.8, table, fontsize=16)
+tab = info.table(rowLabels=['Hyperion e', 'Titan e'],
+           cellText=[[1], [2]],
+           loc='upper right',
+           colWidths=[0.5]*2)
+#Whoever wrote the Table class hates legibility. Let's increase the row height
+for c in tab.properties()['child_artists']:
+    c.set_height(c.get_height()*2)
 
 plt.show()
