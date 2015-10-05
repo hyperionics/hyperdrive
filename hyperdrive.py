@@ -4,7 +4,8 @@ from numpy.linalg import norm
 import csv
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gs
-from itertools import repeat
+from math import sqrt, sin, cos, asin, acos, copysign
+from functools import partial
 
 # Lengths in AU, times in days, masses scaled to saturn (S_m)
 #
@@ -78,7 +79,30 @@ def period(pos, times):
     assert len(crosstimes) == 3
     return crosstimes[2] - crosstimes[1]
 
-
+def kepler(pos, vel, m):
+    """Returns orbital elements from a given position, velocity and mass"""
+    assert len(pos) == 3 and len(vel) == 3
+    R = norm(pos)
+    V = norm(vel)
+    h = np.cross(pos, vel)
+    # Semi-Major Axis
+    sma = 1/(2/R - V**2/(G*(S_m+m)))
+    # Eccentricity
+    ecc = sqrt(1-norm(h)**2/(G*sma*(S_m+m)))
+    # Inclination
+    inc = acos(h[2]/norm(h))
+    # Longitude of Ascending Node
+    lan = asin(copysign(h[0],h[2])/(norm(h)*sin(inc)))
+    # True Anomaly
+    tra = sma*norm(vel)*(1-ecc**2)/(norm(h)*ecc)
+    # Argument of Periapsis    
+    arg = asin(pos[2]/(norm(pos)*sin(inc))) - tra
+    return {'sma': sma,
+            'ecc': ecc,
+            'inc': inc,
+            'lan': lan,
+            'tra': tra,
+            'arg': arg}
 
 def f(y, t0):
     """Vector of Titan's velocity, Hyperion's velocity, T's acc, H's acc"""
@@ -112,6 +136,11 @@ rr = dict(**{quants[i]:r[:,i*3:i*3+3] for i in range(0,len(quants))},
 # Array of separations from H to T
 sep = norm(rr['H_r']-rr['T_r'], axis=1)
 
+H_elem_0 = kepler(H_r_0, H_v_0, H_m)
+T_elem_0 = kepler(T_r_0, T_v_0, T_m)
+
+H_elem_f = kepler(rr['H_r'][-1], rr['H_v'][-1], H_m)
+T_elem_f = kepler(rr['T_r'][-1], rr['T_v'][-1], T_m)
 
 csvhead = ",".join(longquants)
 np.savetxt('output.csv', r, fmt='%.6e', delimiter=',', header=csvhead)
@@ -124,7 +153,7 @@ orbits = plt.subplot(grid[0:2, 0:2])
 orbits.set_title('Path of simulated orbits')
 orbits.plot(rr['T_x'], rr['T_y'], rr['H_x'], rr['H_y'])
 orbits.plot(0,0, 'xr')
-orbits.axis([-.02, .02, -.02, .02])
+orbits.axis([-.015, .015, -.015, .015])
 orbits.legend(('Titan', 'Hyperion'))
 
 seps = plt.subplot(grid[2, :])
@@ -135,10 +164,27 @@ seps.text(5, np.amin(sep), 'min = {:f} AU'.format(np.amin(sep)))
 
 info = plt.subplot(grid[0:-1, -1])
 info.set_title('Info')
-info.set_xticks([])
-info.set_yticks([])
-tab = info.table(rowLabels=['Hyperion e', 'Titan e'],
-           cellText=[[1], [2]],
+info.axis('off')
+labels = [
+    'Hyp init e',
+    'Hyp finl e',
+    'Tit init e',
+    'Tit finl e',
+    'Max separation',
+    'Min separation'
+    ]
+text = [[i] for i in map(partial(round, ndigits=3), [
+    H_elem_0['ecc'],
+    H_elem_f['ecc'],
+    T_elem_0['ecc'],
+    T_elem_f['ecc']])
+    ] + \
+    [[i] for i in map(partial(round, ndigits=5), [
+    np.amax(sep),
+    np.amin(sep)])
+    ]
+tab = info.table(rowLabels=labels,
+           cellText=text,
            loc='upper right',
            colWidths=[0.5]*2)
 #Whoever wrote the Table class hates legibility. Let's increase the row height
