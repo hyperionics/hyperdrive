@@ -29,6 +29,10 @@ H_r_0 = [-7.240723412782416E-03,
          -5.692266853965866E-03,
          3.722613581954420E-03]
 
+T_theta_0 = [0,0,0]
+
+H_theta_0 = [0,0,0]
+
 T_v_0 = [3.058426568747700E-03,
          9.550316106811974E-04,
          -7.900305243565329E-04]
@@ -37,13 +41,18 @@ H_v_0 = [1.796218227601083E-03,
          -2.119021187924069E-03,
          8.963067229904581E-04]
 
+T_omega_0 = [0,0,0]
+
+H_omega_0 = [0,0,0]
+
 # Initials used by Sinclair et al.
 # T_r_0 = [-0.0075533871, 0.0025250254, -0.0000462204]
 # T_v_0 = [-0.0010017342, -0.0031443009, 0.0000059503]
 # H_r_0 = [-0.0006436995, 0.0099145485, 0.0000357506]
 # H_v_0 = [-0.0029182723, 0.0000521415, -0.0000356145]
 
-y0 = T_r_0 + H_r_0 + T_v_0 + H_v_0
+y0 = T_r_0 + H_r_0 + T_theta_0 + H_theta_0 + \
+     T_v_0 + H_v_0 + T_omega_0 + H_omega_0
 
 def period(pos, times):
     """
@@ -96,15 +105,16 @@ def kepler(pos, vel, m):
 
 def f(y, t0):
     """Vector of Titan's velocity, Hyperion's velocity, T's acc, H's acc"""
-    T_r = y[0:3]
-    H_r = y[3:6]
-    T_v = y[6:9]
-    H_v = y[9:12]
+    [T_r, H_r, T_theta, H_theta, T_v, H_v, T_omega, H_omega] = \
+    [y[i:i+3] for i in range(0, len(y), 3)]
     HT_sep = H_r - T_r
     T_a = -G * (S_m * T_r) / norm(T_r)**3
     H_a = -G * ((S_m * H_r)/norm(H_r)**3 + \
           (T_m * HT_sep)/norm(HT_sep)**3)
-    vec = np.concatenate((T_v, H_v, T_a, H_a))
+    T_alpha = [0,0,0]
+    H_alpha = [0,0,0]
+    vec = np.concatenate((T_v, H_v, T_omega, H_omega,
+                          T_a, H_a, T_alpha, H_alpha))
     return vec
 
 # Initial and final times and timestep
@@ -115,11 +125,16 @@ t = np.arange(t_i, t_f, dt)
 
 # Perdorm the integration and assign views for each quantity to dict rr.
 r = odeint(f, y0, t)
-quants = ('T_r', 'H_r', 'T_v', 'H_v')
+quants = ('T_r', 'H_r', 'T_theta', 'H_theta',
+          'T_v', 'H_v', 'T_omega', 'H_omega')
 longquants = ('T_x', 'T_y', 'T_z', 
               'H_x', 'H_y', 'H_z',
-              'T_Vx', 'T_Vy', 'T_Vz'
-              'H_Vx', 'H_Vy', 'H_Vz')
+              'T_T1', 'T_T2', 'T_T3',
+              'H_T1', 'H_T2', 'H_T3',
+              'T_Vx', 'T_Vy', 'T_Vz',
+              'H_Vx', 'H_Vy', 'H_Vz',
+              'T_O1', 'T_O2', 'T_O3',
+              'H_O1', 'H_O2', 'H_O3')
 rr = dict(**{quants[i]:r[:,i*3:i*3+3] for i in range(0,len(quants))},
     **{longquants[i]:r[:,i:i+1] for i in range(0,len(longquants))})
 
