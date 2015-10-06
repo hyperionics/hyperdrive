@@ -130,10 +130,7 @@ H_elem = kepler(rr['H_r'], rr['H_v'], H_m)
 T_elem = kepler(rr['T_r'], rr['T_v'], T_m)
 
 H_elem_0 = H_elem[0]
-print(H_elem_0['mm'])
 T_elem_0 = T_elem[0]
-print(T_elem_0['mm'])
-print(H_elem_0['mm']/T_elem_0['mm'])
 
 csvhead = ",".join(longquants)
 np.savetxt('output.csv', r, fmt='%.6e', delimiter=',', header=csvhead)
@@ -161,10 +158,10 @@ labels = [
     'Hyp mean e',
     'Tit init e',
     'Tit mean e',
-    'Max separation',
-    'Min separation',
     'Init n/n',
-    'Mean n/n'
+    'Mean n/n',
+    'Max separation',
+    'Min separation'
     ]
 text = [[i] for i in map(partial(round, ndigits=3), [
     H_elem_0['ecc'],
@@ -172,7 +169,7 @@ text = [[i] for i in map(partial(round, ndigits=3), [
     T_elem_0['ecc'],
     np.mean(T_elem['ecc']),
     H_elem_0['mm']/T_elem_0['mm'],
-    np.mean(T_elem['mm']/H_elem['mm'])])
+    np.mean(H_elem['mm']/T_elem['mm'])])
     ] + \
     [[i] for i in map(partial(round, ndigits=5), [
     np.amax(sep),
