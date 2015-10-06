@@ -13,7 +13,7 @@ from functools import partial
 # H being Hyperion.
 
 # 6.67408E-11 from m^3/(kg*s^2) to AU^3/(Mass of Saturn * day^2) gives:
-G = -8.46E-8
+G = 8.46E-8
 
 # Masses
 S_m = 1
@@ -45,19 +45,6 @@ H_v_0 = [1.796218227601083E-03,
 
 y0 = T_r_0 + H_r_0 + T_v_0 + H_v_0
 
-def ecc(pos):
-    """
-    Calculate the eccentricity of an orbit given an array of positions.
-    Array must span complete stable orbit for accurate calculation
-    of apses
-    """
-    assert isinstance(pos,np.ndarray)
-    dists = norm(pos, axis=1)
-    apo = np.amax(dists)
-    peri = np.amin(dists)
-    e = (apo - peri)/(apo + peri)
-    return e
-
 def period(pos, times):
     """
     Find the orbital period given an array of positions in MORE THAN ONE
@@ -80,39 +67,42 @@ def period(pos, times):
     return crosstimes[2] - crosstimes[1]
 
 def kepler(pos, vel, m):
-    """Returns orbital elements from a given position, velocity and mass"""
-    assert len(pos) == 3 and len(vel) == 3
-    R = norm(pos)
-    V = norm(vel)
+    """
+    Returns a dict of arrays of orbital elements (and other stuff) from arrays 
+    of position, velocity and mass
+    """
+    R = norm(pos, axis=1)
+    V = norm(vel, axis=1)
     h = np.cross(pos, vel)
+    mu = G*(S_m+m)
     # Semi-Major Axis
-    sma = 1/(2/R - V**2/(G*(S_m+m)))
+    sma = 1/(2/R - V**2/mu)
     # Eccentricity
-    ecc = sqrt(1-norm(h)**2/(G*sma*(S_m+m)))
+    ecc = np.sqrt(1-norm(h, axis=1)**2/(sma*mu))
     # Inclination
-    inc = acos(h[2]/norm(h))
+    inc = np.arccos(h[:,2]/norm(h, axis=1))
     # Longitude of Ascending Node
-    lan = asin(copysign(h[0],h[2])/(norm(h)*sin(inc)))
+    lan = np.arcsin(np.copysign(h[:,0],h[:,2])/(norm(h, axis=1)*np.sin(inc)))
     # True Anomaly
-    tra = sma*norm(vel)*(1-ecc**2)/(norm(h)*ecc)
+    tra = sma*norm(vel, axis=1)*(1-ecc**2)/(norm(h, axis=1)*ecc)
     # Argument of Periapsis    
-    arg = asin(pos[2]/(norm(pos)*sin(inc))) - tra
-    return {'sma': sma,
-            'ecc': ecc,
-            'inc': inc,
-            'lan': lan,
-            'tra': tra,
-            'arg': arg}
+    arg = np.arcsin(pos[:,2]/(norm(pos, axis=1)*np.sin(inc))) - tra
+    # Mean motion
+    mm = np.sqrt(mu/sma**3)/(2*np.pi)
+    dt = [(i, float) for i in ['sma', 'ecc', 'inc',
+                               'lan', 'tra', 'arg',
+                               'mm']]
+    return np.fromiter(zip(sma, ecc, inc, lan, tra, arg, mm), dt)
 
 def f(y, t0):
     """Vector of Titan's velocity, Hyperion's velocity, T's acc, H's acc"""
     T_r = y[0:3]
-    T_v = y[6:9]
     H_r = y[3:6]
+    T_v = y[6:9]
     H_v = y[9:12]
     HT_sep = H_r - T_r
-    T_a = G * (S_m * T_r) / norm(T_r)**3
-    H_a = G * ((S_m * H_r)/norm(H_r)**3 + \
+    T_a = -G * (S_m * T_r) / norm(T_r)**3
+    H_a = -G * ((S_m * H_r)/norm(H_r)**3 + \
           (T_m * HT_sep)/norm(HT_sep)**3)
     vec = np.concatenate((T_v, H_v, T_a, H_a))
     return vec
@@ -136,11 +126,14 @@ rr = dict(**{quants[i]:r[:,i*3:i*3+3] for i in range(0,len(quants))},
 # Array of separations from H to T
 sep = norm(rr['H_r']-rr['T_r'], axis=1)
 
-H_elem_0 = kepler(H_r_0, H_v_0, H_m)
-T_elem_0 = kepler(T_r_0, T_v_0, T_m)
+H_elem = kepler(rr['H_r'], rr['H_v'], H_m)
+T_elem = kepler(rr['T_r'], rr['T_v'], T_m)
 
-H_elem_f = kepler(rr['H_r'][-1], rr['H_v'][-1], H_m)
-T_elem_f = kepler(rr['T_r'][-1], rr['T_v'][-1], T_m)
+H_elem_0 = H_elem[0]
+print(H_elem_0['mm'])
+T_elem_0 = T_elem[0]
+print(T_elem_0['mm'])
+print(H_elem_0['mm']/T_elem_0['mm'])
 
 csvhead = ",".join(longquants)
 np.savetxt('output.csv', r, fmt='%.6e', delimiter=',', header=csvhead)
@@ -159,25 +152,27 @@ orbits.legend(('Titan', 'Hyperion'))
 seps = plt.subplot(grid[2, :])
 seps.set_title('Magnitude of separation between Titan and Hyperion')
 seps.plot(t, sep)
-seps.text(5, np.amax(sep), 'max = {:f} AU'.format(np.amax(sep)))
-seps.text(5, np.amin(sep), 'min = {:f} AU'.format(np.amin(sep)))
 
 info = plt.subplot(grid[0:-1, -1])
 info.set_title('Info')
 info.axis('off')
 labels = [
     'Hyp init e',
-    'Hyp finl e',
+    'Hyp mean e',
     'Tit init e',
-    'Tit finl e',
+    'Tit mean e',
     'Max separation',
-    'Min separation'
+    'Min separation',
+    'Init n/n',
+    'Mean n/n'
     ]
 text = [[i] for i in map(partial(round, ndigits=3), [
     H_elem_0['ecc'],
-    H_elem_f['ecc'],
+    np.mean(H_elem['ecc']),
     T_elem_0['ecc'],
-    T_elem_f['ecc']])
+    np.mean(T_elem['ecc']),
+    H_elem_0['mm']/T_elem_0['mm'],
+    np.mean(T_elem['mm']/H_elem['mm'])])
     ] + \
     [[i] for i in map(partial(round, ndigits=5), [
     np.amax(sep),
