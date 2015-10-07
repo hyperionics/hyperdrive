@@ -113,6 +113,8 @@ def kepler(pos, vel, m):
     R = norm(pos, axis=1)
     V = norm(vel, axis=1)
     h = np.cross(pos, vel)
+    k = [0,0,1]
+    n = np.cross(k, h)
     mu = G*(S_m+m)
     Vecc = np.cross(vel, np.cross(pos, vel))/(G*(S_m+m)) - pos/np.vstack([norm(pos, axis=1)]*3).T
     # Semi-Major Axis
@@ -122,18 +124,22 @@ def kepler(pos, vel, m):
     # Inclination
     inc = np.arccos(h[:,2]/norm(h, axis=1))
     # Longitude of Ascending Node
-    lan = np.arcsin(np.copysign(h[:,0],h[:,2])/(norm(h, axis=1)*np.sin(inc)))
+    lan = np.arccos(n[:,0]/norm(n, axis=1))
     # True Anomaly
     posdotvel = rowdot(pos, vel)
     tra = np.arccos(rowdot(Vecc, pos)/(norm(Vecc, axis=1)*norm(pos, axis=1)))
-    for i in range(0, len(tra)):
-        if posdotvel[i] < 0:
-            tra[i] = 2*np.pi - tra[i]
-
-    # Argument of Periapsis    
-    arg = np.arcsin(pos[:,2]/(norm(pos, axis=1)*np.sin(inc))) - tra
+     # Argument of Periapsis    
+    arg = np.arccos(rowdot(n, Vecc)/(norm(n, axis=1)*norm(Vecc, axis=1)))
     # Mean motion
     mm = np.sqrt(mu/sma**3)/(2*np.pi)
+    # Make all the signs right
+    for i in range(0, len(R)):
+        if posdotvel[i] < 0:
+            tra[i] = 2*np.pi - tra[i]
+        if Vecc[i, 2] < 0:
+            arg[i] = 2*np.pi - arg[i]
+        if n[i, 1] < 0:
+            lan = 2*np.pi - lan[i]
     dt = [(i, float) for i in ['sma', 'ecc', 'inc',
                                'lan', 'tra', 'arg',
                                'mm']]
@@ -222,7 +228,7 @@ def f(y, t0):
 
 # Initial and final times and timestep
 t_i = 0
-t_f = 160
+t_f = 3200
 dt = 0.001
 t = np.arange(t_i, t_f, dt)
 
@@ -259,9 +265,9 @@ T_elem_0 = T_elem[0]
 csvhead = ",".join(longquants)
 np.savetxt('output.csv', r, fmt='%.6e', delimiter=',', header=csvhead)
 
-fig = plt.figure(figsize=(8, 8), facecolor='white')
+fig = plt.figure(figsize=(8, 8*4/3), facecolor='white')
 fig.set_tight_layout(True)
-grid = gs.GridSpec(3, 3)
+grid = gs.GridSpec(4, 3)
 plt.rcParams['axes.formatter.limits'] = [-5,5]
 
 orbits = plt.subplot(grid[0:2, 0:2])
@@ -312,18 +318,21 @@ tab = info.table(rowLabels=labels,
 for c in tab.properties()['child_artists']:
     c.set_height(c.get_height()*2)
 
-fig2 = plt.figure(figsize=(12, 6), facecolor='white')
-grid2 = gs.GridSpec(2, 6)
+# peri = plt.subplot(grid[3,:])
+# peri.plot(t, (T_elem['lan']+T_elem['arg']) - (H_elem['lan']+H_elem['arg']))
 
-titan = plt.subplot(grid2[0,:])
-titan.plot(t, rr['T_O1'], t, rr['T_O2'], t, rr['T_O3'])
-titan.axis([0, t[-1], -np.pi, np.pi])
+# fig2 = plt.figure(figsize=(12, 6), facecolor='white')
+# grid2 = gs.GridSpec(2, 6)
 
-hyperion = plt.subplot(grid2[1,:])
-hyperion.plot(t, rr['H_O1'], t, rr['H_O2'], t, rr['H_O3'])
-hyperion.axis([0, t[-1], -np.pi, np.pi])
-for i in range(0, len(t)-1):      
-    if H_elem['tra'][i] > H_elem['tra'][i+1]: hyperion.axvline(t[i])
-    if T_elem['tra'][i] > T_elem['tra'][i+1]: titan.axvline(t[i])
+# titan = plt.subplot(grid2[0,:])
+# titan.plot(t, rr['T_O1'], t, rr['T_O2'], t, rr['T_O3'])
+# titan.axis([0, t[-1], -np.pi, np.pi])
+
+# hyperion = plt.subplot(grid2[1,:])
+# hyperion.plot(t, rr['H_O1'], t, rr['H_O2'], t, rr['H_O3'])
+# hyperion.axis([0, t[-1], -np.pi, np.pi])
+# for i in range(0, len(t)-1):      
+#     if H_elem['tra'][i] > H_elem['tra'][i+1]: hyperion.axvline(t[i])
+#     if T_elem['tra'][i] > T_elem['tra'][i+1]: titan.axvline(t[i])
 
 plt.show()
