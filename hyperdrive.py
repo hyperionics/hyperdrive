@@ -73,7 +73,31 @@ H_omega_0 = [i * H_omega_0_mag for i in [0.902, 0.133, 0.411]]
 # H_r_0 = [-0.0006436995, 0.0099145485, 0.0000357506]
 # H_v_0 = [-0.0029182723, 0.0000521415, -0.0000356145]
 
-y0 = T_r_0 + H_r_0 + T_theta_0 + H_theta_0 + H_euler_0 + H_wisdom_0 + \
+def eul(wisdom):
+    """Transform from Wisdom angles to Euler angles"""
+    assert len(wisdom) == 3
+    w_theta, w_phi, w_psi = wisdom[0:3]
+    e_theta = atan((cos(w_theta)*sin(w_psi) + sin(w_theta)*cos(w_phi)*cos(w_psi))/\
+        (cos(w_theta)*cos(w_phi)*cos(w_psi) - sin(w_theta)*sin(w_psi)))
+    e_phi = atan(1/(cos(w_phi)*cos(w_psi)))
+    e_psi = atan(-cos(w_phi)*sin(w_psi)/sin(w_phi))
+    return [e_theta, e_phi, e_psi]
+
+def wis(euler):
+    """Transform from Euler angles to Wisdom angles"""
+    assert len(euler) == 3
+    e_theta, e_phi, e_psi = euler[0:3]
+    w_theta = atan((cos(e_theta)*sin(e_psi) + sin(e_theta)*cos(e_phi)*cos(e_psi))/\
+        (cos(e_theta)*cos(e_phi)*cos(e_psi) - sin(e_theta)*sin(e_psi)))
+    w_phi = atan(sin(e_phi)*cos(e_psi))
+    w_psi = atan(-sin(e_phi)*sin(e_psi)/cos(e_phi))
+    return [w_theta, w_phi, w_psi]
+
+########
+H_wisdom_0 = wis(H_euler_0)
+########
+
+y0 = T_r_0 + H_r_0 + T_theta_0 + H_theta_0 + H_wisdom_0 + \
      T_v_0 + H_v_0 + T_omega_0 + H_omega_0
 
 def kepler(pos, vel, m):
@@ -104,74 +128,55 @@ def kepler(pos, vel, m):
                                'mm']]
     return np.fromiter(zip(sma, ecc, inc, lan, tra, arg, mm), dt)
  
-def wis(euler):
-    """Transform from Euler angles to Wisdom angles"""
-    assert len(euler) == 3
-    e_theta, e_phi, e_psi = euler[0:3]
-    w_theta = atan((cos(e_theta)*sin(e_psi) + sin(e_theta)*cos(e_phi)*cos(e_psi))/\
-        (cos(e_theta)*cos(e_phi)*cos(e_psi) - sin(e_theta)*sin(e_psi)))
-    w_phi = atan(sin(e_phi)*cos(e_psi))
-    w_psi = atan(-sin(e_phi)*sin(e_psi)/cos(e_phi))
-    return [w_theta, w_phi, w_psi]
-
-def eul(wisdom):
-    """Transform from Wisdom angles to Euler angles"""
-    assert len(wisdom) == 3
-    w_theta, w_phi, w_psi = wisdom[0:3]
-    e_theta = atan((cos(w_theta)*sin(w_psi) + sin(w_theta)*cos(w_phi)*cos(w_psi))/\
-        (cos(w_theta)*cos(w_phi)*cos(w_psi) - sin(w_theta)*sin(w_psi)))
-    e_phi = atan(1/(cos(w_phi)*cos(w_psi)))
-    e_psi = atan(-cos(w_phi)*sin(w_psi)/sin(w_phi))
-    return [e_theta, e_phi, e_psi]
 
 def ecc(pos, vel, m):
     """Calculate the eccentricity vector from the state vector and mass"""
     return np.cross(vel, np.cross(pos, vel))/(G*(S_m+m)) - pos/norm(pos)
 
-def dircos(euler, wisdom, anom):
+def dircos(wisdom, anom):
     """Calculate the directional cosines from a body towards Saturn"""
-    assert len(euler) == len(wisdom) == 3
-    if np.isclose(norm(euler), 0):
-        theta, phi, psi = wisdom[0:3]
-        alpha = cos(theta - anom)*cos(psi) - sin(theta - anom)*sin(phi)*sin(psi)
-        beta = sin(theta - anom)*cos(phi)
-        gamma = cos(theta - anom)*sin(psi) + sin(theta - anom)*sin(phi)*cos(psi)
-    else:
-        theta, phi, psi = euler[0:3]
-        alpha = cos(theta - anom)*cos(psi) - sin(theta - anom)*cos(phi)*sin(psi)
-        beta = cos(theta - anom)*sin(-psi) - sin(theta - anom)*cos(phi)*cos(psi)
-        gamma = sin(theta-anom)*sin(phi)
+    # assert len(euler) == len(wisdom) == 3
+    # if np.isclose(norm(euler), 0):
+    theta, phi, psi = wisdom[0:3]
+    alpha = cos(theta - anom)*cos(psi) - sin(theta - anom)*sin(phi)*sin(psi)
+    beta = sin(theta - anom)*cos(phi)
+    gamma = cos(theta - anom)*sin(psi) + sin(theta - anom)*sin(phi)*cos(psi)
+    # else:
+    #     theta, phi, psi = euler[0:3]
+    #     alpha = cos(theta - anom)*cos(psi) - sin(theta - anom)*cos(phi)*sin(psi)
+    #     beta = cos(theta - anom)*sin(-psi) - sin(theta - anom)*cos(phi)*cos(psi)
+    #     gamma = sin(theta-anom)*sin(phi)
     return [alpha, beta, gamma]
 
-def eulerderivs(euler, wisdom, omega):
+def eulerderivs(wisdom, omega):
     """Calculate the time-derivatives of the euler angles due to ang. vel."""
-    assert len(euler) == len(wisdom) == len(omega) == 3
-    theta, phi, psi = euler[0:3] if np.isclose(norm(wisdom),0) else wisdom[0:3]
+    assert len(wisdom) == len(omega) == 3
+    theta, phi, psi = wisdom[0:3]
     Dtheta = (omega[0]*sin(psi) + omega[1]*cos(psi))/sin(phi)
     Dphi = omega[0]*cos(psi) - omega[1]*sin(psi)
     Dpsi = omega[2] - Dtheta*cos(phi)
-    if np.isclose(norm(wisdom), 0):
-        return [Dtheta, Dphi, Dpsi], wisdom
-    else:
-        return euler, [Dtheta, Dphi, Dpsi]
+    # if np.isclose(norm(wisdom), 0):
+    return [Dtheta, Dphi, Dpsi]
+    # else:
+    #     return euler, [Dtheta, Dphi, Dpsi]
 
 def f(y, t0):
     """Vector of Titan's velocity, Hyperion's velocity, T's acc, H's acc"""
-    [T_r, H_r, T_theta, H_theta, H_euler, H_wisdom, T_v, H_v, T_omega, H_omega] = \
+    [T_r, H_r, T_theta, H_theta, H_wisdom, T_v, H_v, T_omega, H_omega] = \
     [y[i:i+3] for i in range(0, len(y), 3)]
 
-    for i in [T_theta, H_theta, H_euler, H_wisdom]:
-        for j in range(0,3):
-            if np.isclose(i[j], 0): i[j] = int(0)
-            i[j] = atan2(sin(i[j]), cos(i[j]))
+    # for i in [T_theta, H_theta, H_wisdom]:
+    #     for j in range(0,3):
+    #         if np.isclose(i[j], 0): i[j] = int(0)
+    #         i[j] = atan2(sin(i[j]), cos(i[j]))
 
-    if abs(sin(H_euler[1])) <= 10E-2:
-        H_wisdom = wis(H_euler)
-        H_euler = [int(0)]*3
+    # if abs(sin(H_euler[1])) <= 10E-2:
+    #     H_wisdom = wis(H_euler)
+    #     H_euler = [int(0)]*3
 
-    if abs(cos(H_wisdom[1])) <= 10E-2:
-        H_euler = eul(H_wisdom)
-        H_wisdom = [int(0)]*3
+    # if abs(cos(H_wisdom[1])) <= 10E-2:
+    #     H_euler = eul(H_wisdom)
+    #     H_wisdom = [int(0)]*3
 
     H_r_ = norm(H_r)
     HT_sep = H_r - T_r
@@ -188,9 +193,10 @@ def f(y, t0):
     # T_anom = acos(np.dot(T_ecc, T_r)/(norm(T_ecc)*norm(T_r)))
     # if np.dot(T_r, T_v) < 0: T_anom = 2*np.pi - T_anom
 
-    H_dircos = dircos(H_euler, H_wisdom, H_anom)
+    H_dircos = dircos(H_wisdom, H_anom)
 
-    H_D_euler, H_D_wisdom = eulerderivs(H_euler, H_wisdom, H_omega)
+    # H_D_euler, H_D_wisdom = eulerderivs(H_euler, H_wisdom, H_omega)
+    H_D_wisdom = eulerderivs(H_wisdom, H_omega)
 
     # Titan's MoIs are all equal, so by Harbison it undergoes no ang. acc.
     T_alpha = [0, 0, 0]
@@ -202,7 +208,7 @@ def f(y, t0):
                H_ABC*(H_omega[0]*H_omega[1] - \
                    (3/H_r_**3)*H_dircos[0]*H_dircos[1])]
 
-    vec = np.concatenate((T_v, H_v, T_omega, H_omega, H_D_euler, H_D_wisdom,
+    vec = np.concatenate((T_v, H_v, T_omega, H_omega, H_D_wisdom,
                           T_a, H_a, T_alpha, H_alpha))
     return vec
 
@@ -213,14 +219,13 @@ dt = 0.001
 t = np.arange(t_i, t_f, dt)
 
 # Perform the integration and assign views for each quantity to dict rr.
-r = odeint(f, y0, t, printmessg=True)
-quants = ('T_r', 'H_r', 'T_theta', 'H_theta', 'H_euler', 'H_wisdom',
+r = odeint(f, y0, t)
+quants = ('T_r', 'H_r', 'T_theta', 'H_theta', 'H_wisdom',
           'T_v', 'H_v', 'T_omega', 'H_omega')
 longquants = ('T_x', 'T_y', 'T_z', 
               'H_x', 'H_y', 'H_z',
               'T_T1', 'T_T2', 'T_T3',
               'H_T1', 'H_T2', 'H_T3',
-              'H_E1', 'H_E2', 'H_E3',
               'H_W1', 'H_W2', 'H_W3',
               'T_Vx', 'T_Vy', 'T_Vz',
               'H_Vx', 'H_Vy', 'H_Vz',
