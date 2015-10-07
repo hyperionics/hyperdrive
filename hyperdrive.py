@@ -4,16 +4,19 @@ from numpy.linalg import norm
 import csv
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gs
-from math import sqrt, sin, cos, tan, asin, acos, atan, copysign
+from math import sqrt, sin, cos, tan, asin, acos, atan, atan2, copysign
 from functools import partial
+from pudb import set_trace
 
 # Lengths in AU, times in days, masses scaled to saturn (S_m)
 #
 # Most quantities are [Body]_[property], S being Saturn, T being Titan,
 # H being Hyperion.
 
+AU = 149597871
+
 # 6.67408E-11 from m^3/(kg*s^2) to AU^3/(Mass of Saturn * day^2) gives:
-G = 8.46E-8
+G = 8.46E-8 * AU**3
 
 # Masses
 S_m = 1
@@ -24,17 +27,20 @@ H_m = 9.8E-9
 H_A = 0.314
 H_B = 0.474
 H_C = 0.542
+H_BCA = (H_B - H_C)/H_A
+H_CAB = (H_C - H_A)/H_B
+H_ABC = (H_A - H_B)/H_C
 
 T_A = T_B = T_C = 0.3414
 
 #Initial values for the positions and velocities, from HORIZONS on 2005-09-25
-T_r_0 = [-4.088407843090480E-03,
-         -6.135746299499617E-03,
-         3.570710328903993E-03]
+T_r_0 = [-4.088407843090480E-03 *AU,
+         -6.135746299499617E-03 *AU,
+         3.570710328903993E-03 *AU]
 
-H_r_0 = [-9.556008109223760E-03,
-         -6.330869216667536E-04,
-         1.293277241526503E-03]
+H_r_0 = [-9.556008109223760E-03 *AU,
+         -6.330869216667536E-04 *AU,
+         1.293277241526503E-03 *AU]
 
 T_theta_0 = [0,0,0]
 H_theta_0 = [0,0,0]
@@ -43,13 +49,13 @@ H_theta_0 = [0,0,0]
 H_euler_0 = [2.989, 1.685, 1.641]
 H_wisdom_0 = [0,0,0]
 
-T_v_0 = [2.811008677848850E-03,
-         -1.470816650319267E-03,
-         4.806729268010478E-04]
+T_v_0 = [2.811008677848850E-03 *AU,
+         -1.470816650319267E-03 *AU,
+         4.806729268010478E-04 *AU]
 
-H_v_0 = [6.768811686476851E-04,
-         -2.639837861571281E-03,
-         1.253587766343593E-03]
+H_v_0 = [6.768811686476851E-04 *AU,
+         -2.639837861571281E-03 *AU,
+         1.253587766343593E-03 *AU]
 
 # Titan's rotation is orbit-synchronous, so it only rotates around its
 # principal axis. Since its axial tilt is zero, this is always normal
@@ -125,7 +131,7 @@ def ecc(pos, vel, m):
 def dircos(euler, wisdom, anom):
     """Calculate the directional cosines from a body towards Saturn"""
     assert len(euler) == len(wisdom) == 3
-    if norm(euler) == 0:
+    if np.isclose(norm(euler), 0):
         theta, phi, psi = wisdom[0:3]
         alpha = cos(theta - anom)*cos(psi) - sin(theta - anom)*sin(phi)*sin(psi)
         beta = sin(theta - anom)*cos(phi)
@@ -137,30 +143,36 @@ def dircos(euler, wisdom, anom):
         gamma = sin(theta-anom)*sin(phi)
     return [alpha, beta, gamma]
 
-def eulerderivs(euler, omega):
+def eulerderivs(euler, wisdom, omega):
     """Calculate the time-derivatives of the euler angles due to ang. vel."""
-    assert len(euler) == 3 and len(omega) == 3
-    theta, phi, psi = euler[0:3]
+    assert len(euler) == len(wisdom) == len(omega) == 3
+    theta, phi, psi = euler[0:3] if np.isclose(norm(wisdom),0) else wisdom[0:3]
     Dtheta = (omega[0]*sin(psi) + omega[1]*cos(psi))/sin(phi)
     Dphi = omega[0]*cos(psi) - omega[1]*sin(psi)
     Dpsi = omega[2] - Dtheta*cos(phi)
-    return [Dtheta, Dphi, Dpsi]
+    if np.isclose(norm(wisdom), 0):
+        return [Dtheta, Dphi, Dpsi], wisdom
+    else:
+        return euler, [Dtheta, Dphi, Dpsi]
 
 def f(y, t0):
     """Vector of Titan's velocity, Hyperion's velocity, T's acc, H's acc"""
     [T_r, H_r, T_theta, H_theta, H_euler, H_wisdom, T_v, H_v, T_omega, H_omega] = \
     [y[i:i+3] for i in range(0, len(y), 3)]
 
-    if norm(H_wisdom) == 0 and abs(sin(H_euler[1])) <= 10E-2:
-        H_wisdom = wis(H_euler)
-        H_euler = [0,0,0]
-        # print(t0, H_wisdom, "NOW USING WISDOM")
+    for i in [T_theta, H_theta, H_euler, H_wisdom]:
+        for j in range(0,3):
+            if np.isclose(i[j], 0): i[j] = int(0)
+            i[j] = atan2(sin(i[j]), cos(i[j]))
 
-    if norm(H_euler) == 0 and abs(cos(H_euler[1])) <= 10E-2:
+    if abs(sin(H_euler[1])) <= 10E-2:
+        H_wisdom = wis(H_euler)
+        H_euler = [int(0)]*3
+
+    if abs(cos(H_wisdom[1])) <= 10E-2:
         H_euler = eul(H_wisdom)
-        H_wisdom = [0,0,0]
-        # print(t0, H_wisdom, "NOW USING EULER")
-        
+        H_wisdom = [int(0)]*3
+
     H_r_ = norm(H_r)
     HT_sep = H_r - T_r
 
@@ -169,34 +181,26 @@ def f(y, t0):
           (T_m * HT_sep)/norm(HT_sep)**3)
 
     H_ecc = ecc(H_r, H_v, H_m)
-    T_ecc = ecc(T_r, T_v, T_m)
+    # T_ecc = ecc(T_r, T_v, T_m)
 
     H_anom = acos(np.dot(H_ecc, H_r)/(norm(H_ecc)*norm(H_r)))
     if np.dot(H_r, H_v) < 0: H_anom = 2*np.pi - H_anom
-    T_anom = acos(np.dot(T_ecc, T_r)/(norm(T_ecc)*norm(T_r)))
-    if np.dot(T_r, T_v) < 0: T_anom = 2*np.pi - T_anom
+    # T_anom = acos(np.dot(T_ecc, T_r)/(norm(T_ecc)*norm(T_r)))
+    # if np.dot(T_r, T_v) < 0: T_anom = 2*np.pi - T_anom
 
     H_dircos = dircos(H_euler, H_wisdom, H_anom)
 
-    if norm(H_wisdom) == 0:
-        H_D_euler = eulerderivs(H_euler, H_omega)
-    else:
-        H_D_euler = [0,0,0]
-
-    if norm(H_euler) == 0:
-        H_D_wisdom = eulerderivs(H_wisdom, H_omega)
-    else:
-        H_D_wisdom = [0,0,0]
+    H_D_euler, H_D_wisdom = eulerderivs(H_euler, H_wisdom, H_omega)
 
     # Titan's MoIs are all equal, so by Harbison it undergoes no ang. acc.
     T_alpha = [0, 0, 0]
-    H_alpha = [((H_B-H_C)/H_A)*(H_omega[1]*H_omega[2] - \
+
+    H_alpha = [H_BCA*(H_omega[1]*H_omega[2] - \
                    (3/H_r_**3)*H_dircos[1]*H_dircos[2]),
-               ((H_C-H_A)/H_B)*(H_omega[0]*H_omega[2] - \
+               H_CAB*(H_omega[0]*H_omega[2] - \
                    (3/H_r_**3)*H_dircos[0]*H_dircos[2]),
-               ((H_A-H_B)/H_C)*(H_omega[0]*H_omega[1] - \
+               H_ABC*(H_omega[0]*H_omega[1] - \
                    (3/H_r_**3)*H_dircos[0]*H_dircos[1])]
-    # H_alpha = [0,0,0]
 
     vec = np.concatenate((T_v, H_v, T_omega, H_omega, H_D_euler, H_D_wisdom,
                           T_a, H_a, T_alpha, H_alpha))
@@ -204,12 +208,12 @@ def f(y, t0):
 
 # Initial and final times and timestep
 t_i = 0
-t_f = 1
+t_f = 160
 dt = 0.001
 t = np.arange(t_i, t_f, dt)
 
 # Perform the integration and assign views for each quantity to dict rr.
-r = odeint(f, y0, t)
+r = odeint(f, y0, t, printmessg=True)
 quants = ('T_r', 'H_r', 'T_theta', 'H_theta', 'H_euler', 'H_wisdom',
           'T_v', 'H_v', 'T_omega', 'H_omega')
 longquants = ('T_x', 'T_y', 'T_z', 
@@ -245,12 +249,12 @@ orbits = plt.subplot(grid[0:2, 0:2])
 orbits.set_title('Path of simulated orbits')
 orbits.plot(rr['T_x'], rr['T_y'], rr['H_x'], rr['H_y'])
 orbits.plot(0,0, 'xr')
-orbits.axis([-.015, .015, -.015, .015])
+orbits.axis([-2E6, 2E6, -2E6, 2E6])
 orbits.legend(('Titan', 'Hyperion'))
 seps = plt.subplot(grid[2, 0:3])
 seps.set_title('Magnitude of separation between Titan and Hyperion')
 seps.set_xlabel('days')
-seps.set_ylabel('AU')
+seps.set_ylabel('km')
 seps.plot(t, sep)
 
 info = plt.subplot(grid[0:2, -1])
@@ -288,15 +292,15 @@ tab = info.table(rowLabels=labels,
 for c in tab.properties()['child_artists']:
     c.set_height(c.get_height()*2)
 
-fig2 = plt.figure(figsize=(16, 8), facecolor='white')
+fig2 = plt.figure(figsize=(12, 6), facecolor='white')
 grid2 = gs.GridSpec(2, 6)
 
 titan = plt.subplot(grid2[0,:])
 titan.plot(t, rr['T_T1'], t, rr['T_T2'], t, rr['T_T3'])
-titan.axis([0, 1, -.1, .1])
+titan.axis([0, t[-1], -np.pi, np.pi])
 
 hyperion = plt.subplot(grid2[1,:])
 hyperion.plot(t, rr['H_T1'], t, rr['H_T2'], t, rr['H_T3'])
-hyperion.axis([0, 1, -.1, .1])
+hyperion.axis([0, t[-1], -np.pi, np.pi])
 
 plt.show()
