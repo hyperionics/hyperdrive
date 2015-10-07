@@ -23,6 +23,14 @@ S_m = 1
 T_m = 2.367E-4
 H_m = 9.8E-9
 
+# Radii and Js
+# Titan J2 from Iess and R from Zebker
+T_J2 = 31.808E-6
+T_R = 2574.91
+# Saturn J2 form Jacobson and R from NSSDC (Nasa)
+S_J2 = 16299E-6
+S_R = 60268
+
 # Dimensionless moi
 H_A = 0.314
 H_B = 0.474
@@ -73,16 +81,6 @@ H_omega_0 = [i * H_omega_0_mag for i in [0.902, 0.133, 0.411]]
 # H_r_0 = [-0.0006436995, 0.0099145485, 0.0000357506]
 # H_v_0 = [-0.0029182723, 0.0000521415, -0.0000356145]
 
-def eul(wisdom):
-    """Transform from Wisdom angles to Euler angles"""
-    assert len(wisdom) == 3
-    w_theta, w_phi, w_psi = wisdom[0:3]
-    e_theta = atan((cos(w_theta)*sin(w_psi) + sin(w_theta)*cos(w_phi)*cos(w_psi))/\
-        (cos(w_theta)*cos(w_phi)*cos(w_psi) - sin(w_theta)*sin(w_psi)))
-    e_phi = atan(1/(cos(w_phi)*cos(w_psi)))
-    e_psi = atan(-cos(w_phi)*sin(w_psi)/sin(w_phi))
-    return [e_theta, e_phi, e_psi]
-
 def wis(euler):
     """Transform from Euler angles to Wisdom angles"""
     assert len(euler) == 3
@@ -93,12 +91,19 @@ def wis(euler):
     w_psi = atan(-sin(e_phi)*sin(e_psi)/cos(e_phi))
     return [w_theta, w_phi, w_psi]
 
-########
+# Use Wisdom angles instead of Euler angles!
 H_wisdom_0 = wis(H_euler_0)
-########
 
+# Combine initial conditions into a handy vector
 y0 = T_r_0 + H_r_0 + T_theta_0 + H_theta_0 + H_wisdom_0 + \
      T_v_0 + H_v_0 + T_omega_0 + H_omega_0
+
+def ecc(pos, vel, m):
+    """Calculate the eccentricity vector from the state vector and mass"""
+    return np.cross(vel, np.cross(pos, vel))/(G*(S_m+m)) - pos/norm(pos)
+
+def rowdot(v1, v2):
+    return np.einsum('ij, ij->i', v1, v2)
 
 def kepler(pos, vel, m):
     """
@@ -109,16 +114,22 @@ def kepler(pos, vel, m):
     V = norm(vel, axis=1)
     h = np.cross(pos, vel)
     mu = G*(S_m+m)
+    Vecc = np.cross(vel, np.cross(pos, vel))/(G*(S_m+m)) - pos/np.vstack([norm(pos, axis=1)]*3).T
     # Semi-Major Axis
     sma = 1/(2/R - V**2/mu)
     # Eccentricity
-    ecc = np.sqrt(1-norm(h, axis=1)**2/(sma*mu))
+    ecc = norm(Vecc, axis=1)
     # Inclination
     inc = np.arccos(h[:,2]/norm(h, axis=1))
     # Longitude of Ascending Node
     lan = np.arcsin(np.copysign(h[:,0],h[:,2])/(norm(h, axis=1)*np.sin(inc)))
     # True Anomaly
-    tra = sma*norm(vel, axis=1)*(1-ecc**2)/(norm(h, axis=1)*ecc)
+    posdotvel = rowdot(pos, vel)
+    tra = np.arccos(rowdot(Vecc, pos)/(norm(Vecc, axis=1)*norm(pos, axis=1)))
+    for i in range(0, len(tra)):
+        if posdotvel[i] < 0:
+            tra[i] = 2*np.pi - tra[i]
+
     # Argument of Periapsis    
     arg = np.arcsin(pos[:,2]/(norm(pos, axis=1)*np.sin(inc))) - tra
     # Mean motion
@@ -127,25 +138,13 @@ def kepler(pos, vel, m):
                                'lan', 'tra', 'arg',
                                'mm']]
     return np.fromiter(zip(sma, ecc, inc, lan, tra, arg, mm), dt)
- 
-
-def ecc(pos, vel, m):
-    """Calculate the eccentricity vector from the state vector and mass"""
-    return np.cross(vel, np.cross(pos, vel))/(G*(S_m+m)) - pos/norm(pos)
 
 def dircos(wisdom, anom):
     """Calculate the directional cosines from a body towards Saturn"""
-    # assert len(euler) == len(wisdom) == 3
-    # if np.isclose(norm(euler), 0):
     theta, phi, psi = wisdom[0:3]
     alpha = cos(theta - anom)*cos(psi) - sin(theta - anom)*sin(phi)*sin(psi)
     beta = sin(theta - anom)*cos(phi)
     gamma = cos(theta - anom)*sin(psi) + sin(theta - anom)*sin(phi)*cos(psi)
-    # else:
-    #     theta, phi, psi = euler[0:3]
-    #     alpha = cos(theta - anom)*cos(psi) - sin(theta - anom)*cos(phi)*sin(psi)
-    #     beta = cos(theta - anom)*sin(-psi) - sin(theta - anom)*cos(phi)*cos(psi)
-    #     gamma = sin(theta-anom)*sin(phi)
     return [alpha, beta, gamma]
 
 def eulerderivs(wisdom, omega):
@@ -155,10 +154,19 @@ def eulerderivs(wisdom, omega):
     Dtheta = (omega[0]*sin(psi) + omega[1]*cos(psi))/sin(phi)
     Dphi = omega[0]*cos(psi) - omega[1]*sin(psi)
     Dpsi = omega[2] - Dtheta*cos(phi)
-    # if np.isclose(norm(wisdom), 0):
     return [Dtheta, Dphi, Dpsi]
-    # else:
-    #     return euler, [Dtheta, Dphi, Dpsi]
+
+def flattenacc(pos, R, J2):
+    r = norm(pos)
+    theta = acos(pos[2]/r)
+    phi = atan2(pos[1],pos[0])
+    x = (1/2) * (3*cos(theta)**2-1) * sin(theta) * cos(phi) + \
+        sin(theta)*cos(theta)**2
+    y = (1/2) * sin(theta) * sin(phi) * (3*cos(theta)**2-1) + \
+        sin(theta)*cos(theta)**2*sin(phi)
+    z = (1/2) * cos(theta) * (3*cos(theta)**2-1) - \
+        sin(theta)**2*cos(theta)
+    return np.multiply(3*J2*G*R**2/r**4, [x, y, z])
 
 def f(y, t0):
     """Vector of Titan's velocity, Hyperion's velocity, T's acc, H's acc"""
@@ -170,28 +178,28 @@ def f(y, t0):
     #         if np.isclose(i[j], 0): i[j] = int(0)
     #         i[j] = atan2(sin(i[j]), cos(i[j]))
 
-    # if abs(sin(H_euler[1])) <= 10E-2:
-    #     H_wisdom = wis(H_euler)
-    #     H_euler = [int(0)]*3
-
-    # if abs(cos(H_wisdom[1])) <= 10E-2:
-    #     H_euler = eul(H_wisdom)
-    #     H_wisdom = [int(0)]*3
-
     H_r_ = norm(H_r)
     HT_sep = H_r - T_r
 
-    T_a = -G * (S_m * T_r) / norm(T_r)**3
+    ST_flat = flattenacc(T_r, S_R, S_J2)
+    assert acos(np.dot(ST_flat, -T_r)/(norm(ST_flat)*norm(T_r))) <= np.pi/2
+    SH_flat = flattenacc(H_r, S_R, S_J2)
+    assert acos(np.dot(SH_flat, -H_r)/(norm(SH_flat)*norm(H_r))) <= np.pi/2
+    TH_flat = flattenacc(HT_sep, T_R, T_J2)
+    assert acos(np.dot(TH_flat, -HT_sep)/(norm(TH_flat)*norm(HT_sep))) <= np.pi/2
+
+    T_a = -G * (S_m * T_r) / norm(T_r)**3 + ST_flat
     H_a = -G * ((S_m * H_r)/norm(H_r)**3 + \
-          (T_m * HT_sep)/norm(HT_sep)**3)
+          (T_m * HT_sep)/norm(HT_sep)**3) + \
+          SH_flat + TH_flat
 
     H_ecc = ecc(H_r, H_v, H_m)
-    # T_ecc = ecc(T_r, T_v, T_m)
+    T_ecc = ecc(T_r, T_v, T_m)
 
     H_anom = acos(np.dot(H_ecc, H_r)/(norm(H_ecc)*norm(H_r)))
     if np.dot(H_r, H_v) < 0: H_anom = 2*np.pi - H_anom
-    # T_anom = acos(np.dot(T_ecc, T_r)/(norm(T_ecc)*norm(T_r)))
-    # if np.dot(T_r, T_v) < 0: T_anom = 2*np.pi - T_anom
+    T_anom = acos(np.dot(T_ecc, T_r)/(norm(T_ecc)*norm(T_r)))
+    if np.dot(T_r, T_v) < 0: T_anom = 2*np.pi - T_anom
 
     H_dircos = dircos(H_wisdom, H_anom)
 
@@ -234,6 +242,11 @@ longquants = ('T_x', 'T_y', 'T_z',
 rr = dict(**{quants[i]:r[:,i*3:i*3+3] for i in range(0,len(quants))},
     **{longquants[i]:r[:,i:i+1] for i in range(0,len(longquants))})
 
+for i in [rr['T_theta'], rr['H_theta'], rr['H_wisdom']]:
+    for j in range(0, len(t)):
+        for k in range(0, 3):
+            i[j,k] = atan2(sin(i[j,k]),cos(i[j,k]))
+
 # Array of separations from H to T
 sep = norm(rr['H_r']-rr['T_r'], axis=1)
 
@@ -249,6 +262,7 @@ np.savetxt('output.csv', r, fmt='%.6e', delimiter=',', header=csvhead)
 fig = plt.figure(figsize=(8, 8), facecolor='white')
 fig.set_tight_layout(True)
 grid = gs.GridSpec(3, 3)
+plt.rcParams['axes.formatter.limits'] = [-5,5]
 
 orbits = plt.subplot(grid[0:2, 0:2])
 orbits.set_title('Path of simulated orbits')
@@ -256,6 +270,7 @@ orbits.plot(rr['T_x'], rr['T_y'], rr['H_x'], rr['H_y'])
 orbits.plot(0,0, 'xr')
 orbits.axis([-2E6, 2E6, -2E6, 2E6])
 orbits.legend(('Titan', 'Hyperion'))
+
 seps = plt.subplot(grid[2, 0:3])
 seps.set_title('Magnitude of separation between Titan and Hyperion')
 seps.set_xlabel('days')
@@ -301,11 +316,14 @@ fig2 = plt.figure(figsize=(12, 6), facecolor='white')
 grid2 = gs.GridSpec(2, 6)
 
 titan = plt.subplot(grid2[0,:])
-titan.plot(t, rr['T_T1'], t, rr['T_T2'], t, rr['T_T3'])
+titan.plot(t, rr['T_O1'], t, rr['T_O2'], t, rr['T_O3'])
 titan.axis([0, t[-1], -np.pi, np.pi])
 
 hyperion = plt.subplot(grid2[1,:])
-hyperion.plot(t, rr['H_T1'], t, rr['H_T2'], t, rr['H_T3'])
+hyperion.plot(t, rr['H_O1'], t, rr['H_O2'], t, rr['H_O3'])
 hyperion.axis([0, t[-1], -np.pi, np.pi])
+for i in range(0, len(t)-1):      
+    if H_elem['tra'][i] > H_elem['tra'][i+1]: hyperion.axvline(t[i])
+    if T_elem['tra'][i] > T_elem['tra'][i+1]: titan.axvline(t[i])
 
 plt.show()
