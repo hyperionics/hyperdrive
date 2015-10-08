@@ -227,11 +227,11 @@ def f(y, t0):
     T_alpha = [0, 0, 0]
 
     H_alpha = [H_BCA*(H_omega[1]*H_omega[2] - \
-                   (3/H_r_**3)*H_dircos[1]*H_dircos[2]),
+                   (3*G*S_m/H_r_**3)*H_dircos[1]*H_dircos[2]),
                H_CAB*(H_omega[0]*H_omega[2] - \
-                   (3/H_r_**3)*H_dircos[0]*H_dircos[2]),
+                   (3*G*S_m/H_r_**3)*H_dircos[0]*H_dircos[2]),
                H_ABC*(H_omega[0]*H_omega[1] - \
-                   (3/H_r_**3)*H_dircos[0]*H_dircos[1])]
+                   (3*G*S_m/H_r_**3)*H_dircos[0]*H_dircos[1])]
 
     vec = np.concatenate((T_v, H_v, T_omega, H_omega, H_D_wisdom,
                           T_a, H_a, T_alpha, H_alpha))
@@ -239,7 +239,7 @@ def f(y, t0):
 
 # Initial and final times and timestep
 t_i = 0
-t_f = 1600
+t_f = 640
 dt = 0.001
 t = np.arange(t_i, t_f, dt)
 
@@ -369,18 +369,18 @@ hyp_o_t.set_ylabel('d|Theta|/dt')
 # peri = plt.subplot(grid[3,:])
 # peri.plot(t, (T_elem['lan']+T_elem['arg']) - (H_elem['lan']+H_elem['arg']))
 
-# fig2 = plt.figure(figsize=(12, 6), facecolor='white')
-# grid2 = gs.GridSpec(2, 6)
+fig2 = plt.figure(figsize=(12, 6), facecolor='white')
+grid2 = gs.GridSpec(2, 6)
 
-# titan = plt.subplot(grid2[0,:])
-# titan.plot(t, rr['T_O1'], t, rr['T_O2'], t, rr['T_O3'])
-# titan.axis([0, t[-1], -np.pi, np.pi])
+titan = plt.subplot(grid2[0,:])
+titan.plot(t, rr['T_O1'], t, rr['T_O2'], t, rr['T_O3'])
+titan.axis([0, t[-1], -np.pi, np.pi])
 
-# hyperion = plt.subplot(grid2[1,:])
-# hyperion.plot(t, rr['H_O1'], t, rr['H_O2'], t, rr['H_O3'])
-# hyperion.axis([0, t[-1], -np.pi, np.pi])
-# for i in range(0, len(t)):      
-#     if H_elem['tra'][i-1] > H_elem['tra'][i]: hyperion.axvline(t[i])
-#     if T_elem['tra'][i-1] > T_elem['tra'][i]: titan.axvline(t[i])
+hyperion = plt.subplot(grid2[1,:])
+hyperion.plot(t, rr['H_O1'], t, rr['H_O2'], t, rr['H_O3'])
+hyperion.axis([0, t[-1], -np.pi, np.pi])
+for i in range(0, len(t)):      
+    if H_elem['tra'][i-1] > H_elem['tra'][i]: hyperion.axvline(t[i])
+    if T_elem['tra'][i-1] > T_elem['tra'][i]: titan.axvline(t[i])
 
 plt.show()
