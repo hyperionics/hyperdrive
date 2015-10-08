@@ -6,7 +6,6 @@ import matplotlib.pyplot as plt
 import matplotlib.gridspec as gs
 from math import sqrt, sin, cos, tan, asin, acos, atan, atan2, copysign
 from functools import partial
-from pudb import set_trace
 
 # Lengths in AU, times in days, masses scaled to saturn (S_m)
 #
@@ -174,6 +173,18 @@ def flattenacc(pos, R, J2):
         sin(theta)**2*cos(theta)
     return np.multiply(3*J2*G*R**2/r**4, [x, y, z])
 
+def poinsect(a, af, f):
+    through_sect = np.full((len(af),), False, dtype=bool)
+    for i in range(0,len(af)):
+        if f == 0:
+            if af[i-1] > af[i]:
+                through_sect[i] = True
+        else:
+            if af[i-1] < f < af[i]:
+                through_sect[i] = True
+    out = a[through_sect]
+    return out
+
 def f(y, t0):
     """Vector of Titan's velocity, Hyperion's velocity, T's acc, H's acc"""
     [T_r, H_r, T_theta, H_theta, H_wisdom, T_v, H_v, T_omega, H_omega] = \
@@ -228,7 +239,7 @@ def f(y, t0):
 
 # Initial and final times and timestep
 t_i = 0
-t_f = 3200
+t_f = 1600
 dt = 0.001
 t = np.arange(t_i, t_f, dt)
 
@@ -253,7 +264,6 @@ for i in [rr['T_theta'], rr['H_theta'], rr['H_wisdom']]:
         for k in range(0, 3):
             i[j,k] = atan2(sin(i[j,k]),cos(i[j,k]))
 
-# Array of separations from H to T
 sep = norm(rr['H_r']-rr['T_r'], axis=1)
 
 H_elem = kepler(rr['H_r'], rr['H_v'], H_m)
@@ -265,9 +275,9 @@ T_elem_0 = T_elem[0]
 csvhead = ",".join(longquants)
 np.savetxt('output.csv', r, fmt='%.6e', delimiter=',', header=csvhead)
 
-fig = plt.figure(figsize=(8, 8*4/3), facecolor='white')
+fig = plt.figure(figsize=(8, 8), facecolor='white')
 fig.set_tight_layout(True)
-grid = gs.GridSpec(4, 3)
+grid = gs.GridSpec(3, 3)
 plt.rcParams['axes.formatter.limits'] = [-5,5]
 
 orbits = plt.subplot(grid[0:2, 0:2])
@@ -318,6 +328,44 @@ tab = info.table(rowLabels=labels,
 for c in tab.properties()['child_artists']:
     c.set_height(c.get_height()*2)
 
+figps = plt.figure(figsize=(12, 3), facecolor='white')
+gridps = gs.GridSpec(1, 4)
+figps.set_tight_layout(True)
+
+hyp_o1_t1 = plt.subplot(gridps[:,0])
+hyp_o1_t1.scatter(poinsect(rr['H_T1'], H_elem['tra'], 0),
+                  poinsect(rr['H_O1'], H_elem['tra'], 0),
+                  marker='.')
+hyp_o1_t1.set_xlabel('Theta 1')
+hyp_o1_t1.set_ylabel('d(Theta 1)/dt')
+hyp_o1_t1.axis([-4, 4, -1.5, 1.5])
+
+
+hyp_o2_t2 = plt.subplot(gridps[:,1])
+hyp_o2_t2.scatter(poinsect(rr['H_T2'], H_elem['tra'], 0),
+                  poinsect(rr['H_O2'], H_elem['tra'], 0),
+                  marker='.')
+hyp_o2_t2.set_xlabel('Theta 2')
+hyp_o2_t2.set_ylabel('d(Theta 2)/dt')
+hyp_o2_t2.axis([-4, 4, -1.5, 1.5])
+
+
+hyp_o3_t3 = plt.subplot(gridps[:,2])
+hyp_o3_t3.scatter(poinsect(rr['H_T3'], H_elem['tra'], 0),
+                  poinsect(rr['H_O3'], H_elem['tra'], 0),
+                  marker='.')
+hyp_o3_t3.set_xlabel('Theta 3')
+hyp_o3_t3.set_ylabel('d(Theta 3)/dt')
+hyp_o3_t3.axis([-4, 4, -1.5, 1.5])
+
+
+hyp_o_t = plt.subplot(gridps[:,3])
+hyp_o_t.scatter(poinsect(norm(rr['H_theta'], axis=1), H_elem['tra'], 0),
+                poinsect(norm(rr['H_omega'], axis=1), H_elem['tra'], 0),
+                marker='.')
+hyp_o_t.set_xlabel('|Theta|')
+hyp_o_t.set_ylabel('d|Theta|/dt')
+
 # peri = plt.subplot(grid[3,:])
 # peri.plot(t, (T_elem['lan']+T_elem['arg']) - (H_elem['lan']+H_elem['arg']))
 
@@ -331,8 +379,8 @@ for c in tab.properties()['child_artists']:
 # hyperion = plt.subplot(grid2[1,:])
 # hyperion.plot(t, rr['H_O1'], t, rr['H_O2'], t, rr['H_O3'])
 # hyperion.axis([0, t[-1], -np.pi, np.pi])
-# for i in range(0, len(t)-1):      
-#     if H_elem['tra'][i] > H_elem['tra'][i+1]: hyperion.axvline(t[i])
-#     if T_elem['tra'][i] > T_elem['tra'][i+1]: titan.axvline(t[i])
+# for i in range(0, len(t)):      
+#     if H_elem['tra'][i-1] > H_elem['tra'][i]: hyperion.axvline(t[i])
+#     if T_elem['tra'][i-1] > T_elem['tra'][i]: titan.axvline(t[i])
 
 plt.show()
