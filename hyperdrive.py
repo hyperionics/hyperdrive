@@ -3,9 +3,11 @@ import numpy as np
 from numpy.linalg import norm
 import csv
 import matplotlib.pyplot as plt
+import matplotlib.cm as cm
 import matplotlib.gridspec as gs
 from math import sqrt, sin, cos, tan, asin, acos, atan, atan2, copysign
 from functools import partial
+import tables
 
 # Lengths in AU, times in days, masses scaled to saturn (S_m)
 #
@@ -16,6 +18,9 @@ AU = 149597871
 
 # 6.67408E-11 from m^3/(kg*s^2) to AU^3/(Mass of Saturn * day^2) gives:
 G = 8.46E-8 * AU**3
+
+# Are we including the effect of Titan on the chaotic rotation of Hyperion?
+titanic = False
 
 # Masses
 S_m = 1
@@ -139,10 +144,8 @@ def kepler(pos, vel, m):
             arg[i] = 2*np.pi - arg[i]
         if n[i, 1] < 0:
             lan = 2*np.pi - lan[i]
-    dt = [(i, float) for i in ['sma', 'ecc', 'inc',
-                               'lan', 'tra', 'arg',
-                               'mm']]
-    return np.fromiter(zip(sma, ecc, inc, lan, tra, arg, mm), dt)
+    n = 'sma, ecc, inc, lan, tra, arg, mm'
+    return np.rec.fromarrays([sma, ecc, inc, lan, tra, arg, mm], names = n)
 
 def dircos(wisdom, anom):
     """Calculate the directional cosines from a body towards Saturn"""
@@ -185,6 +188,20 @@ def poinsect(a, af, f):
     out = a[through_sect]
     return out
 
+def dictpoinsect(d, keys, af, f):
+    through_sect = np.full((len(af),), False, dtype=bool)
+    for i in range(0,len(af)):
+        if f == 0:
+            if af[i-1] > af[i]:
+                through_sect[i] = True
+        else:
+            if af[i-1] < f < af[i]:
+                through_sect[i] = True
+    out = {}
+    for i in keys:
+        out[i] = d[i][through_sect]
+    return out
+
 def f(y, t0):
     """Vector of Titan's velocity, Hyperion's velocity, T's acc, H's acc"""
     [T_r, H_r, T_theta, H_theta, H_wisdom, T_v, H_v, T_omega, H_omega] = \
@@ -197,6 +214,7 @@ def f(y, t0):
 
     H_r_ = norm(H_r)
     HT_sep = H_r - T_r
+    HT_sep_ = norm(HT_sep)
 
     ST_flat = flattenacc(T_r, S_R, S_J2)
     assert acos(np.dot(ST_flat, -T_r)/(norm(ST_flat)*norm(T_r))) <= np.pi/2
@@ -220,18 +238,28 @@ def f(y, t0):
 
     H_dircos = dircos(H_wisdom, H_anom)
 
+    HT_dircos = [HT_sep[i]/HT_sep_ for i in range(0,3)]
+
     # H_D_euler, H_D_wisdom = eulerderivs(H_euler, H_wisdom, H_omega)
     H_D_wisdom = eulerderivs(H_wisdom, H_omega)
 
     # Titan's MoIs are all equal, so by Harbison it undergoes no ang. acc.
     T_alpha = [0, 0, 0]
 
+    # Include the influence of titan on the rotation of Hyperion. Or don't.
+    if titanic:
+        HT_alpha = [(3*G*T_m/HT_sep_**3)*HT_dircos[1]*HT_dircos[2],
+                    (3*G*T_m/HT_sep_**3)*HT_dircos[0]*HT_dircos[2],
+                    (3*G*T_m/HT_sep_**3)*HT_dircos[0]*HT_dircos[1]]
+    else:
+        HT_alpha = [0, 0, 0]
+
     H_alpha = [H_BCA*(H_omega[1]*H_omega[2] - \
-                   (3*G*S_m/H_r_**3)*H_dircos[1]*H_dircos[2]),
+                   (3*G*S_m/H_r_**3)*H_dircos[1]*H_dircos[2] - HT_alpha[0]),
                H_CAB*(H_omega[0]*H_omega[2] - \
-                   (3*G*S_m/H_r_**3)*H_dircos[0]*H_dircos[2]),
+                   (3*G*S_m/H_r_**3)*H_dircos[0]*H_dircos[2] - HT_alpha[1]),
                H_ABC*(H_omega[0]*H_omega[1] - \
-                   (3*G*S_m/H_r_**3)*H_dircos[0]*H_dircos[1])]
+                   (3*G*S_m/H_r_**3)*H_dircos[0]*H_dircos[1] - HT_alpha[2])]
 
     vec = np.concatenate((T_v, H_v, T_omega, H_omega, H_D_wisdom,
                           T_a, H_a, T_alpha, H_alpha))
@@ -239,7 +267,7 @@ def f(y, t0):
 
 # Initial and final times and timestep
 t_i = 0
-t_f = 640
+t_f = 1920
 dt = 0.001
 t = np.arange(t_i, t_f, dt)
 
@@ -271,6 +299,8 @@ T_elem = kepler(rr['T_r'], rr['T_v'], T_m)
 
 H_elem_0 = H_elem[0]
 T_elem_0 = T_elem[0]
+
+H_poincare = dictpoinsect(rr, ['H_T1', 'H_T2', 'H_T3', 'H_O1', 'H_O2', 'H_O3'], H_elem.tra, 0)
 
 csvhead = ",".join(longquants)
 np.savetxt('output.csv', r, fmt='%.6e', delimiter=',', header=csvhead)
@@ -333,31 +363,25 @@ gridps = gs.GridSpec(1, 4)
 figps.set_tight_layout(True)
 
 hyp_o1_t1 = plt.subplot(gridps[:,0])
-hyp_o1_t1.scatter(poinsect(rr['H_T1'], H_elem['tra'], 0),
-                  poinsect(rr['H_O1'], H_elem['tra'], 0),
+hyp_o1_t1.scatter(H_poincare['H_T1'], H_poincare['H_O1'],
                   marker='.')
 hyp_o1_t1.set_xlabel('Theta 1')
 hyp_o1_t1.set_ylabel('d(Theta 1)/dt')
 hyp_o1_t1.axis([-4, 4, -1.5, 1.5])
 
-
 hyp_o2_t2 = plt.subplot(gridps[:,1])
-hyp_o2_t2.scatter(poinsect(rr['H_T2'], H_elem['tra'], 0),
-                  poinsect(rr['H_O2'], H_elem['tra'], 0),
+hyp_o2_t2.scatter(H_poincare['H_T2'], H_poincare['H_O2'],
                   marker='.')
 hyp_o2_t2.set_xlabel('Theta 2')
 hyp_o2_t2.set_ylabel('d(Theta 2)/dt')
 hyp_o2_t2.axis([-4, 4, -1.5, 1.5])
 
-
 hyp_o3_t3 = plt.subplot(gridps[:,2])
-hyp_o3_t3.scatter(poinsect(rr['H_T3'], H_elem['tra'], 0),
-                  poinsect(rr['H_O3'], H_elem['tra'], 0),
+hyp_o3_t3.scatter(H_poincare['H_T3'], H_poincare['H_O3'],
                   marker='.')
 hyp_o3_t3.set_xlabel('Theta 3')
 hyp_o3_t3.set_ylabel('d(Theta 3)/dt')
 hyp_o3_t3.axis([-4, 4, -1.5, 1.5])
-
 
 hyp_o_t = plt.subplot(gridps[:,3])
 hyp_o_t.scatter(poinsect(norm(rr['H_theta'], axis=1), H_elem['tra'], 0),
@@ -369,18 +393,18 @@ hyp_o_t.set_ylabel('d|Theta|/dt')
 # peri = plt.subplot(grid[3,:])
 # peri.plot(t, (T_elem['lan']+T_elem['arg']) - (H_elem['lan']+H_elem['arg']))
 
-fig2 = plt.figure(figsize=(12, 6), facecolor='white')
-grid2 = gs.GridSpec(2, 6)
+# fig2 = plt.figure(figsize=(12, 6), facecolor='white')
+# grid2 = gs.GridSpec(2, 6)
 
-titan = plt.subplot(grid2[0,:])
-titan.plot(t, rr['T_O1'], t, rr['T_O2'], t, rr['T_O3'])
-titan.axis([0, t[-1], -np.pi, np.pi])
+# titan = plt.subplot(grid2[0,:])
+# titan.plot(t, rr['T_O1'], t, rr['T_O2'], t, rr['T_O3'])
+# titan.axis([0, t[-1], -np.pi, np.pi])
 
-hyperion = plt.subplot(grid2[1,:])
-hyperion.plot(t, rr['H_O1'], t, rr['H_O2'], t, rr['H_O3'])
-hyperion.axis([0, t[-1], -np.pi, np.pi])
-for i in range(0, len(t)):      
-    if H_elem['tra'][i-1] > H_elem['tra'][i]: hyperion.axvline(t[i])
-    if T_elem['tra'][i-1] > T_elem['tra'][i]: titan.axvline(t[i])
+# hyperion = plt.subplot(grid2[1,:])
+# hyperion.plot(t, rr['H_O1'], t, rr['H_O2'], t, rr['H_O3'])
+# hyperion.axis([0, t[-1], -np.pi, np.pi])
+# for i in range(0, len(t)):      
+#     if H_elem['tra'][i-1] > H_elem['tra'][i]: hyperion.axvline(t[i])
+#     if T_elem['tra'][i-1] > T_elem['tra'][i]: titan.axvline(t[i])
 
 plt.show()
