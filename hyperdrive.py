@@ -1,4 +1,6 @@
 from scipy.integrate import odeint
+from scipy.linalg import svd, hankel
+from scipy.signal import argrelmin
 import numpy as np
 from numpy.linalg import norm
 import csv
@@ -9,7 +11,7 @@ from math import sqrt, sin, cos, tan, asin, acos, atan, atan2, copysign
 from functools import partial
 import tables
 
-# Lengths in AU, times in days, masses scaled to saturn (S_m)
+# Lengths in AU-converted-to-km, times in days, masses scaled to saturn (S_m)
 #
 # Most quantities are [Body]_[property], S being Saturn, T being Titan,
 # H being Hyperion.
@@ -20,7 +22,7 @@ AU = 149597871
 G = 8.46E-8 * AU**3
 
 # Are we including the effect of Titan on the chaotic rotation of Hyperion?
-titanic = False
+titanic = True
 
 # Masses
 S_m = 1
@@ -35,7 +37,7 @@ T_R = 2574.91
 S_J2 = 16299E-6
 S_R = 60268
 
-# Dimensionless moi
+# Dimensionless MoI
 H_A = 0.314
 H_B = 0.474
 H_C = 0.542
@@ -267,7 +269,7 @@ def f(y, t0):
 
 # Initial and final times and timestep
 t_i = 0
-t_f = 1920
+t_f = 640
 dt = 0.001
 t = np.arange(t_i, t_f, dt)
 
@@ -285,12 +287,14 @@ longquants = ('T_x', 'T_y', 'T_z',
               'T_O1', 'T_O2', 'T_O3',
               'H_O1', 'H_O2', 'H_O3')
 rr = dict(**{quants[i]:r[:,i*3:i*3+3] for i in range(0,len(quants))},
-    **{longquants[i]:r[:,i:i+1] for i in range(0,len(longquants))})
+          **{longquants[i]:r[:,i:i+1] for i in range(0,len(longquants))})
 
 for i in [rr['T_theta'], rr['H_theta'], rr['H_wisdom']]:
     for j in range(0, len(t)):
         for k in range(0, 3):
-            i[j,k] = atan2(sin(i[j,k]),cos(i[j,k]))
+            ang = atan2(sin(i[j,k]),cos(i[j,k]))
+            if ang < 0: ang += 2*np.pi
+            i[j,k] = ang
 
 sep = norm(rr['H_r']-rr['T_r'], axis=1)
 
@@ -299,6 +303,14 @@ T_elem = kepler(rr['T_r'], rr['T_v'], T_m)
 
 H_elem_0 = H_elem[0]
 T_elem_0 = T_elem[0]
+
+# Single value decomposition, first constructing matrix of trajectories
+dim = 80
+traj = np.reshape(rr['H_T1'], (len(t)/dim, dim))
+U, S, V = svd(traj, full_matrices=False)
+print('dim', dim)
+print(U.shape, S.shape, V.shape)
+print(S)
 
 H_poincare = dictpoinsect(rr, ['H_T1', 'H_T2', 'H_T3', 'H_O1', 'H_O2', 'H_O3'], H_elem.tra, 0)
 
@@ -319,9 +331,9 @@ orbits.legend(('Titan', 'Hyperion'))
 
 seps = plt.subplot(grid[2, 0:3])
 seps.set_title('Magnitude of separation between Titan and Hyperion')
-seps.set_xlabel('days')
+# seps.set_xlabel('days')
 seps.set_ylabel('km')
-seps.plot(t, sep)
+seps.plot(sep)
 
 info = plt.subplot(grid[0:2, -1])
 info.set_title('Info')
@@ -358,37 +370,69 @@ tab = info.table(rowLabels=labels,
 for c in tab.properties()['child_artists']:
     c.set_height(c.get_height()*2)
 
-figps = plt.figure(figsize=(12, 3), facecolor='white')
-gridps = gs.GridSpec(1, 4)
-figps.set_tight_layout(True)
+# figps = plt.figure(figsize=(12, 3), facecolor='white')
+# gridps = gs.GridSpec(1, 4)
+# figps.set_tight_layout(True)
 
-hyp_o1_t1 = plt.subplot(gridps[:,0])
-hyp_o1_t1.scatter(H_poincare['H_T1'], H_poincare['H_O1'],
-                  marker='.')
-hyp_o1_t1.set_xlabel('Theta 1')
-hyp_o1_t1.set_ylabel('d(Theta 1)/dt')
-hyp_o1_t1.axis([-4, 4, -1.5, 1.5])
+# # prox = poinsect(sep, H_elem['tra'], 0)
 
-hyp_o2_t2 = plt.subplot(gridps[:,1])
-hyp_o2_t2.scatter(H_poincare['H_T2'], H_poincare['H_O2'],
-                  marker='.')
-hyp_o2_t2.set_xlabel('Theta 2')
-hyp_o2_t2.set_ylabel('d(Theta 2)/dt')
-hyp_o2_t2.axis([-4, 4, -1.5, 1.5])
+# hyp_o1_t1 = plt.subplot(gridps[:,0])
+# hyp_o1_t1.scatter(H_poincare['H_T1'], H_poincare['H_O1'], marker='.')
+# hyp_o1_t1.set_xlabel('Theta 1')
+# hyp_o1_t1.set_ylabel('d(Theta 1)/dt')
+# hyp_o1_t1.axis([0, 2*np.pi, -2, 2])
 
-hyp_o3_t3 = plt.subplot(gridps[:,2])
-hyp_o3_t3.scatter(H_poincare['H_T3'], H_poincare['H_O3'],
-                  marker='.')
-hyp_o3_t3.set_xlabel('Theta 3')
-hyp_o3_t3.set_ylabel('d(Theta 3)/dt')
-hyp_o3_t3.axis([-4, 4, -1.5, 1.5])
+# hyp_o2_t2 = plt.subplot(gridps[:,1])
+# hyp_o2_t2.scatter(H_poincare['H_T2'], H_poincare['H_O2'], marker='.')
+# hyp_o2_t2.set_xlabel('Theta 2')
+# hyp_o2_t2.set_ylabel('d(Theta 2)/dt')
+# hyp_o2_t2.axis([0, 2*np.pi, -2, 2])
 
-hyp_o_t = plt.subplot(gridps[:,3])
-hyp_o_t.scatter(poinsect(norm(rr['H_theta'], axis=1), H_elem['tra'], 0),
-                poinsect(norm(rr['H_omega'], axis=1), H_elem['tra'], 0),
-                marker='.')
-hyp_o_t.set_xlabel('|Theta|')
-hyp_o_t.set_ylabel('d|Theta|/dt')
+# hyp_o3_t3 = plt.subplot(gridps[:,2])
+# hyp_o3_t3.scatter(H_poincare['H_T3'], H_poincare['H_O3'], marker='.')
+# hyp_o3_t3.set_xlabel('Theta 3')
+# hyp_o3_t3.set_ylabel('d(Theta 3)/dt')
+# hyp_o3_t3.axis([0, 2*np.pi, -2, 2])
+
+# hyp_o_t = plt.subplot(gridps[:,3])
+# hyp_o_tter(poinsect(norm(rr['H_theta'], axis=1), H_elem['tra'], 0),
+#                 poinsect(norm(rr['H_omega'], axis=1), H_elem['tra'], 0),
+#                 marker='.')
+# hyp_o_t.set_xlabel('|Theta|')
+# hyp_o_t.set_ylabel('d|Theta|/dt')
+
+###
+
+# figdel = plt.figure(figsize=(12, 4), facecolor='white')
+# griddel = gs.GridSpec(1, 3)
+# figdel.set_tight_layout(True)
+
+# delstep = 10
+
+# hyp_t1_del = plt.subplot(griddel[0,0])
+# hyp_t1_del.plot(H_poincare['H_T1'].flat[:-delstep:delstep],
+#                   H_poincare['H_T1'].flat[delstep::delstep])
+# hyp_t1_del.set_xlabel('Theta 1 @ t')
+# hyp_t1_del.set_ylabel('Theta 1 @ t + {}'.format(delstep))
+# hyp_t1_del.axis([0, 2*np.pi, 0, 2*np.pi])
+
+# hyp_t2_del = plt.subplot(griddel[0,1])
+# hyp_t2_del.plot(H_poincare['H_T2'].flat[:-delstep:delstep],
+#                   H_poincare['H_T2'].flat[delstep::delstep])
+# hyp_t2_del.set_xlabel('Theta 2 @ t')
+# hyp_t2_del.set_ylabel('Theta 2 @ t + {}'.format(delstep))
+# hyp_t2_del.axis([0, 2*np.pi, 0, 2*np.pi])
+
+# hyp_t3_del = plt.subplot(griddel[0,2])
+# hyp_t3_del.plot(H_poincare['H_T3'].flat[:-delstep:delstep],
+#                   H_poincare['H_T3'].flat[delstep::delstep])
+# hyp_t3_del.set_xlabel('Theta 3 @ t')
+# hyp_t3_del.set_ylabel('Theta 3 @ t + {}'.format(delstep))
+# hyp_t3_del.axis([0, 2*np.pi, 0, 2*np.pi])
+
+# hyp_3D_del = plt.subplot(griddel[1:8,1:5])
+
+###
 
 # peri = plt.subplot(grid[3,:])
 # peri.plot(t, (T_elem['lan']+T_elem['arg']) - (H_elem['lan']+H_elem['arg']))
