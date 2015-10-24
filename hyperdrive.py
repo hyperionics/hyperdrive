@@ -2,6 +2,7 @@ from scipy.integrate import odeint
 from scipy.linalg import svd, hankel
 from scipy.signal import argrelmin
 import numpy as np
+from numpy import dot, cross, pi
 from numpy.linalg import norm
 import csv
 import matplotlib.pyplot as plt
@@ -62,6 +63,8 @@ H_theta_0 = [0,0,0]
 # From Harbison, Cassini flyby on 2005-09-25
 H_euler_0 = [2.989, 1.685, 1.641]
 H_wisdom_0 = [0,0,0]
+H_anom_0 = 2.780523844083934E+02
+
 
 T_v_0 = [2.811008677848850E-03 *AU,
          -1.470816650319267E-03 *AU,
@@ -75,10 +78,10 @@ H_v_0 = [6.768811686476851E-04 *AU,
 # principal axis. Since its axial tilt is zero, this is always normal
 # to the orbital plane.
 T_per = 1.594772769327679E+01 #From HORIZONS on 2005-09-25
-T_omega_0 = [0,0,2*np.pi/T_per]
+T_omega_0 = [0,0,2*pi/T_per]
 
 # From Harbison, Cassini flyby on 2005-09-25
-H_omega_0_mag = 72*np.pi/180
+H_omega_0_mag = 72*pi/180
 H_omega_0 = [i * H_omega_0_mag for i in [0.902, 0.133, 0.411]]
 
 # Initials used by Sinclair et al.
@@ -97,16 +100,65 @@ def wis(euler):
     w_psi = atan(-sin(e_phi)*sin(e_psi)/cos(e_phi))
     return [w_theta, w_phi, w_psi]
 
+def dircos(wisdom, anom):
+    """Calculate the directional cosines from a body towards Saturn"""
+    theta, phi, psi = wisdom[0:3]
+    alpha = cos(theta - anom)*cos(psi) - sin(theta - anom)*sin(phi)*sin(psi)
+    beta = sin(theta - anom)*cos(phi)
+    gamma = cos(theta - anom)*sin(psi) + sin(theta - anom)*sin(phi)*cos(psi)
+    return [alpha, beta, gamma]
+
+def q_prod(q, r):
+    Q0 = q[0]*r[0] - dot(q[1:], r[1:])
+    Q_1 = [q[0] * i for i in r[1:]]
+    Q_2 = [r[0] * i for i in q[1:]]
+    Q_ = np.add(np.add(Q_1, Q_2), cross(q[1:], r[1:]))
+    return np.concatenate(([Q0], Q_))
+
+def q_norm(q):
+    Q = [q[0], q[1]*1j, q[2]*1j, q[3]*1j]
+    QC = [q[0], q[1]*-1j, q[2]*-1j, q[3]*-1j]
+    return np.dot(Q, QC).real
+
+def spc2bod(q, x):
+    assert len(q) == len(x) == 4
+    assert q[0] == 0 and x[0] == 0
+    x_ = x[1:]
+    q_ = q[1:]
+    qc_ = [-i for i in q_]
+    xq0 = dot(x_, q_)
+    xq_ = cross(x_, q_)
+    X0 = dot(qc_, xq_)
+    X_ = np.add([xq0 * i for i in qc_], cross(qc_, xq_))
+    return np.concatenate(([X0], X_))
+
+def bod2spc(q, X):
+    assert len(q) == 4
+    assert q[0] == 0 and X[0] == 0
+    X_ = X[1:]
+    q_ = q[1:]
+    qc_ = [-i for i in q_]
+    Xqc0 = dot(X_, qc_)
+    Xqc_ = cross(X_, qc_)
+    x0 = dot(q_, Xqc_)
+    x_ = np.add([Xqc0 * i for i in q_], cross(q_, Xqc_))
+    return np.concatenate(([x0], x_))
+
 # Use Wisdom angles instead of Euler angles!
 H_wisdom_0 = wis(H_euler_0)
 
+H_q_0 = [0,0,0,0]
+H_q_0[1:] = dircos(H_wisdom_0, H_anom_0)
+
+# H_qdot_0 = [1/2 * i for i in q_prod(H_q_0, H_omega_0)]
+
 # Combine initial conditions into a handy vector
-y0 = T_r_0 + H_r_0 + T_theta_0 + H_theta_0 + H_wisdom_0 + \
-     T_v_0 + H_v_0 + T_omega_0 + H_omega_0
+y0 = T_r_0 + H_r_0 + \
+     T_v_0 + H_v_0 + H_omega_0 + H_q_0
 
 def ecc(pos, vel, m):
     """Calculate the eccentricity vector from the state vector and mass"""
-    return np.cross(vel, np.cross(pos, vel))/(G*(S_m+m)) - pos/norm(pos)
+    return cross(vel, cross(pos, vel))/(G*(S_m+m)) - pos/norm(pos)
 
 def rowdot(v1, v2):
     return np.einsum('ij, ij->i', v1, v2)
@@ -118,11 +170,11 @@ def kepler(pos, vel, m):
     """
     R = norm(pos, axis=1)
     V = norm(vel, axis=1)
-    h = np.cross(pos, vel)
+    h = cross(pos, vel)
     k = [0,0,1]
-    n = np.cross(k, h)
+    n = cross(k, h)
     mu = G*(S_m+m)
-    Vecc = np.cross(vel, np.cross(pos, vel))/(G*(S_m+m)) - pos/np.vstack([norm(pos, axis=1)]*3).T
+    Vecc = cross(vel, cross(pos, vel))/(G*(S_m+m)) - pos/np.vstack([norm(pos, axis=1)]*3).T
     # Semi-Major Axis
     sma = 1/(2/R - V**2/mu)
     # Eccentricity
@@ -137,25 +189,18 @@ def kepler(pos, vel, m):
      # Argument of Periapsis    
     arg = np.arccos(rowdot(n, Vecc)/(norm(n, axis=1)*norm(Vecc, axis=1)))
     # Mean motion
-    mm = np.sqrt(mu/sma**3)/(2*np.pi)
+    mm = np.sqrt(mu/sma**3)/(2*pi)
     # Make all the signs right
     for i in range(0, len(R)):
         if posdotvel[i] < 0:
-            tra[i] = 2*np.pi - tra[i]
+            tra[i] = 2*pi - tra[i]
         if Vecc[i, 2] < 0:
-            arg[i] = 2*np.pi - arg[i]
+            arg[i] = 2*pi - arg[i]
         if n[i, 1] < 0:
-            lan = 2*np.pi - lan[i]
+            lan = 2*pi - lan[i]
     n = 'sma, ecc, inc, lan, tra, arg, mm'
     return np.rec.fromarrays([sma, ecc, inc, lan, tra, arg, mm], names = n)
 
-def dircos(wisdom, anom):
-    """Calculate the directional cosines from a body towards Saturn"""
-    theta, phi, psi = wisdom[0:3]
-    alpha = cos(theta - anom)*cos(psi) - sin(theta - anom)*sin(phi)*sin(psi)
-    beta = sin(theta - anom)*cos(phi)
-    gamma = cos(theta - anom)*sin(psi) + sin(theta - anom)*sin(phi)*cos(psi)
-    return [alpha, beta, gamma]
 
 def eulerderivs(wisdom, omega):
     """Calculate the time-derivatives of the euler angles due to ang. vel."""
@@ -206,8 +251,9 @@ def dictpoinsect(d, keys, af, f):
 
 def f(y, t0):
     """Vector of Titan's velocity, Hyperion's velocity, T's acc, H's acc"""
-    [T_r, H_r, T_theta, H_theta, H_wisdom, T_v, H_v, T_omega, H_omega] = \
-    [y[i:i+3] for i in range(0, len(y), 3)]
+    [T_r, H_r, T_v, H_v, H_omega] = \
+    [y[i:i+3] for i in range(0, len(y)-4, 3)]
+    H_q = y[-4:]
 
     # for i in [T_theta, H_theta, H_wisdom]:
     #     for j in range(0,3):
@@ -219,11 +265,11 @@ def f(y, t0):
     HT_sep_ = norm(HT_sep)
 
     ST_flat = flattenacc(T_r, S_R, S_J2)
-    assert acos(np.dot(ST_flat, -T_r)/(norm(ST_flat)*norm(T_r))) <= np.pi/2
+    assert acos(dot(ST_flat, -T_r)/(norm(ST_flat)*norm(T_r))) <= pi/2
     SH_flat = flattenacc(H_r, S_R, S_J2)
-    assert acos(np.dot(SH_flat, -H_r)/(norm(SH_flat)*norm(H_r))) <= np.pi/2
+    assert acos(dot(SH_flat, -H_r)/(norm(SH_flat)*norm(H_r))) <= pi/2
     TH_flat = flattenacc(HT_sep, T_R, T_J2)
-    assert acos(np.dot(TH_flat, -HT_sep)/(norm(TH_flat)*norm(HT_sep))) <= np.pi/2
+    assert acos(dot(TH_flat, -HT_sep)/(norm(TH_flat)*norm(HT_sep))) <= pi/2
 
     T_a = -G * (S_m * T_r) / norm(T_r)**3 + ST_flat
     H_a = -G * ((S_m * H_r)/norm(H_r)**3 + \
@@ -233,20 +279,18 @@ def f(y, t0):
     H_ecc = ecc(H_r, H_v, H_m)
     T_ecc = ecc(T_r, T_v, T_m)
 
-    H_anom = acos(np.dot(H_ecc, H_r)/(norm(H_ecc)*norm(H_r)))
-    if np.dot(H_r, H_v) < 0: H_anom = 2*np.pi - H_anom
-    T_anom = acos(np.dot(T_ecc, T_r)/(norm(T_ecc)*norm(T_r)))
-    if np.dot(T_r, T_v) < 0: T_anom = 2*np.pi - T_anom
+    H_anom = acos(dot(H_ecc, H_r)/(norm(H_ecc)*norm(H_r)))
+    if dot(H_r, H_v) < 0: H_anom = 2*pi - H_anom
+    T_anom = acos(dot(T_ecc, T_r)/(norm(T_ecc)*norm(T_r)))
+    if dot(T_r, T_v) < 0: T_anom = 2*pi - T_anom
 
-    H_dircos = dircos(H_wisdom, H_anom)
-
+    H_dircos = H_q[1:]
     HT_dircos = [HT_sep[i]/HT_sep_ for i in range(0,3)]
 
-    # H_D_euler, H_D_wisdom = eulerderivs(H_euler, H_wisdom, H_omega)
-    H_D_wisdom = eulerderivs(H_wisdom, H_omega)
-
-    # Titan's MoIs are all equal, so by Harbison it undergoes no ang. acc.
-    T_alpha = [0, 0, 0]
+    # print('Q: ', q_norm(H_q))
+    H_qdot = [(1/2)*i for i in q_prod(bod2spc(H_q,
+        np.concatenate(([0], H_omega))), H_q)]
+    # print('Qdot: ', q_norm(H_qdot))
 
     # Include the influence of titan on the rotation of Hyperion. Or don't.
     if titanic:
@@ -263,38 +307,27 @@ def f(y, t0):
                H_ABC*(H_omega[0]*H_omega[1] - \
                    (3*G*S_m/H_r_**3)*H_dircos[0]*H_dircos[1] - HT_alpha[2])]
 
-    vec = np.concatenate((T_v, H_v, T_omega, H_omega, H_D_wisdom,
-                          T_a, H_a, T_alpha, H_alpha))
+    vec = np.concatenate((T_v, H_v, T_a, H_a, H_alpha, H_qdot))
     return vec
 
 # Initial and final times and timestep
 t_i = 0
-t_f = 640
+t_f = 160
 dt = 0.001
 t = np.arange(t_i, t_f, dt)
 
 # Perform the integration and assign views for each quantity to dict rr.
 r = odeint(f, y0, t)
-quants = ('T_r', 'H_r', 'T_theta', 'H_theta', 'H_wisdom',
-          'T_v', 'H_v', 'T_omega', 'H_omega')
+quants = ('T_r', 'H_r','T_v', 'H_v', 'H_omega', 'H_q')
 longquants = ('T_x', 'T_y', 'T_z', 
               'H_x', 'H_y', 'H_z',
-              'T_T1', 'T_T2', 'T_T3',
-              'H_T1', 'H_T2', 'H_T3',
-              'H_W1', 'H_W2', 'H_W3',
               'T_Vx', 'T_Vy', 'T_Vz',
               'H_Vx', 'H_Vy', 'H_Vz',
-              'T_O1', 'T_O2', 'T_O3',
-              'H_O1', 'H_O2', 'H_O3')
-rr = dict(**{quants[i]:r[:,i*3:i*3+3] for i in range(0,len(quants))},
+              'H_O1', 'H_O2', 'H_O3',
+              'H_Q0', 'H_Q1', 'H_Q2', 'H_Q3')
+rr = dict(**{quants[i]:r[:,i*3:i*3+3] for i in range(0,len(quants)-1)}, 
+          H_q=r[-4:-1],
           **{longquants[i]:r[:,i:i+1] for i in range(0,len(longquants))})
-
-for i in [rr['T_theta'], rr['H_theta'], rr['H_wisdom']]:
-    for j in range(0, len(t)):
-        for k in range(0, 3):
-            ang = atan2(sin(i[j,k]),cos(i[j,k]))
-            if ang < 0: ang += 2*np.pi
-            i[j,k] = ang
 
 sep = norm(rr['H_r']-rr['T_r'], axis=1)
 
@@ -305,17 +338,17 @@ H_elem_0 = H_elem[0]
 T_elem_0 = T_elem[0]
 
 # Single value decomposition, first constructing matrix of trajectories
-dim = 80
-traj = np.reshape(rr['H_T1'], (len(t)/dim, dim))
-U, S, V = svd(traj, full_matrices=False)
-print('dim', dim)
-print(U.shape, S.shape, V.shape)
-print(S)
+# dim = 80
+# traj = np.reshape(rr['H_T1'], (len(t)/dim, dim))
+# U, S, V = svd(traj, full_matrices=False)
+# print('dim', dim)
+# print(U.shape, S.shape, V.shape)
+# print(S)
 
-H_poincare = dictpoinsect(rr, ['H_T1', 'H_T2', 'H_T3', 'H_O1', 'H_O2', 'H_O3'], H_elem.tra, 0)
+# H_poincare = dictpoinsect(rr, ['H_T1', 'H_T2', 'H_T3', 'H_O1', 'H_O2', 'H_O3'], H_elem.tra, 0)
 
 csvhead = ",".join(longquants)
-np.savetxt('output.csv', r, fmt='%.6e', delimiter=',', header=csvhead)
+np.savetxt('outputq.csv', r, fmt='%.6e', delimiter=',', header=csvhead)
 
 fig = plt.figure(figsize=(8, 8), facecolor='white')
 fig.set_tight_layout(True)
@@ -380,19 +413,19 @@ for c in tab.properties()['child_artists']:
 # hyp_o1_t1.scatter(H_poincare['H_T1'], H_poincare['H_O1'], marker='.')
 # hyp_o1_t1.set_xlabel('Theta 1')
 # hyp_o1_t1.set_ylabel('d(Theta 1)/dt')
-# hyp_o1_t1.axis([0, 2*np.pi, -2, 2])
+# hyp_o1_t1.axis([0, 2*pi, -2, 2])
 
 # hyp_o2_t2 = plt.subplot(gridps[:,1])
 # hyp_o2_t2.scatter(H_poincare['H_T2'], H_poincare['H_O2'], marker='.')
 # hyp_o2_t2.set_xlabel('Theta 2')
 # hyp_o2_t2.set_ylabel('d(Theta 2)/dt')
-# hyp_o2_t2.axis([0, 2*np.pi, -2, 2])
+# hyp_o2_t2.axis([0, 2*pi, -2, 2])
 
 # hyp_o3_t3 = plt.subplot(gridps[:,2])
 # hyp_o3_t3.scatter(H_poincare['H_T3'], H_poincare['H_O3'], marker='.')
 # hyp_o3_t3.set_xlabel('Theta 3')
 # hyp_o3_t3.set_ylabel('d(Theta 3)/dt')
-# hyp_o3_t3.axis([0, 2*np.pi, -2, 2])
+# hyp_o3_t3.axis([0, 2*pi, -2, 2])
 
 # hyp_o_t = plt.subplot(gridps[:,3])
 # hyp_o_tter(poinsect(norm(rr['H_theta'], axis=1), H_elem['tra'], 0),
@@ -400,6 +433,7 @@ for c in tab.properties()['child_artists']:
 #                 marker='.')
 # hyp_o_t.set_xlabel('|Theta|')
 # hyp_o_t.set_ylabel('d|Theta|/dt')
+
 
 ###
 
@@ -414,21 +448,21 @@ for c in tab.properties()['child_artists']:
 #                   H_poincare['H_T1'].flat[delstep::delstep])
 # hyp_t1_del.set_xlabel('Theta 1 @ t')
 # hyp_t1_del.set_ylabel('Theta 1 @ t + {}'.format(delstep))
-# hyp_t1_del.axis([0, 2*np.pi, 0, 2*np.pi])
+# hyp_t1_del.axis([0, 2*pi, 0, 2*pi])
 
 # hyp_t2_del = plt.subplot(griddel[0,1])
 # hyp_t2_del.plot(H_poincare['H_T2'].flat[:-delstep:delstep],
 #                   H_poincare['H_T2'].flat[delstep::delstep])
 # hyp_t2_del.set_xlabel('Theta 2 @ t')
 # hyp_t2_del.set_ylabel('Theta 2 @ t + {}'.format(delstep))
-# hyp_t2_del.axis([0, 2*np.pi, 0, 2*np.pi])
+# hyp_t2_del.axis([0, 2*pi, 0, 2*pi])
 
 # hyp_t3_del = plt.subplot(griddel[0,2])
 # hyp_t3_del.plot(H_poincare['H_T3'].flat[:-delstep:delstep],
 #                   H_poincare['H_T3'].flat[delstep::delstep])
 # hyp_t3_del.set_xlabel('Theta 3 @ t')
 # hyp_t3_del.set_ylabel('Theta 3 @ t + {}'.format(delstep))
-# hyp_t3_del.axis([0, 2*np.pi, 0, 2*np.pi])
+# hyp_t3_del.axis([0, 2*pi, 0, 2*pi])
 
 # hyp_3D_del = plt.subplot(griddel[1:8,1:5])
 
@@ -437,18 +471,19 @@ for c in tab.properties()['child_artists']:
 # peri = plt.subplot(grid[3,:])
 # peri.plot(t, (T_elem['lan']+T_elem['arg']) - (H_elem['lan']+H_elem['arg']))
 
-# fig2 = plt.figure(figsize=(12, 6), facecolor='white')
-# grid2 = gs.GridSpec(2, 6)
+fig2 = plt.figure(figsize=(12, 3), facecolor='white')
+grid2 = gs.GridSpec(1, 4)
 
 # titan = plt.subplot(grid2[0,:])
 # titan.plot(t, rr['T_O1'], t, rr['T_O2'], t, rr['T_O3'])
-# titan.axis([0, t[-1], -np.pi, np.pi])
+# titan.axis([0, t[-1], -pi, pi])
 
-# hyperion = plt.subplot(grid2[1,:])
-# hyperion.plot(t, rr['H_O1'], t, rr['H_O2'], t, rr['H_O3'])
-# hyperion.axis([0, t[-1], -np.pi, np.pi])
-# for i in range(0, len(t)):      
-#     if H_elem['tra'][i-1] > H_elem['tra'][i]: hyperion.axvline(t[i])
-#     if T_elem['tra'][i-1] > T_elem['tra'][i]: titan.axvline(t[i])
+hyperion = plt.subplot(grid2[:,:])
+hyperion.plot(t, rr['H_Q0'], t, rr['H_Q1'], t, rr['H_Q2'], t, rr['H_Q3'])
+hyperion.axis([0, t[-1], -pi, pi])
+hyperion.legend(('q_0', 'q_1', 'q_2', 'q_3'))
+for i in range(0, len(t)):      
+    if H_elem['tra'][i-1] > H_elem['tra'][i]: hyperion.axvline(t[i])
+    # if T_elem['tra'][i-1] > T_elem['tra'][i]: titan.axvline(t[i])
 
 plt.show()
