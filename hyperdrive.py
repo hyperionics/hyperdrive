@@ -122,27 +122,13 @@ def q_norm(q):
 
 def spc2bod(q, x):
     assert len(q) == len(x) == 4
-    assert q[0] == 0 and x[0] == 0
-    x_ = x[1:]
-    q_ = q[1:]
-    qc_ = [-i for i in q_]
-    xq0 = dot(x_, q_)
-    xq_ = cross(x_, q_)
-    X0 = dot(qc_, xq_)
-    X_ = np.add([xq0 * i for i in qc_], cross(qc_, xq_))
-    return np.concatenate(([X0], X_))
+    qc = [q[0], -q[1], -q[2], -q[3]]
+    return q_prod(qc, q_prod(x, q))
 
 def bod2spc(q, X):
-    assert len(q) == 4
-    assert q[0] == 0 and X[0] == 0
-    X_ = X[1:]
-    q_ = q[1:]
-    qc_ = [-i for i in q_]
-    Xqc0 = dot(X_, qc_)
-    Xqc_ = cross(X_, qc_)
-    x0 = dot(q_, Xqc_)
-    x_ = np.add([Xqc0 * i for i in q_], cross(q_, Xqc_))
-    return np.concatenate(([x0], x_))
+    assert len(q) == len(X) == 4
+    qc = [q[0], -q[1], -q[2], -q[3]]
+    return q_prod(q, q_prod(X, qc))
 
 # Use Wisdom angles instead of Euler angles!
 H_wisdom_0 = wis(H_euler_0)
@@ -312,7 +298,7 @@ def f(y, t0):
 
 # Initial and final times and timestep
 t_i = 0
-t_f = 160
+t_f = 1600
 dt = 0.001
 t = np.arange(t_i, t_f, dt)
 
@@ -480,10 +466,10 @@ grid2 = gs.GridSpec(1, 4)
 
 hyperion = plt.subplot(grid2[:,:])
 hyperion.plot(t, rr['H_Q0'], t, rr['H_Q1'], t, rr['H_Q2'], t, rr['H_Q3'])
-hyperion.axis([0, t[-1], -pi, pi])
+hyperion.axis([0, t[-1], -1, 1])
 hyperion.legend(('q_0', 'q_1', 'q_2', 'q_3'))
-for i in range(0, len(t)):      
-    if H_elem['tra'][i-1] > H_elem['tra'][i]: hyperion.axvline(t[i])
-    # if T_elem['tra'][i-1] > T_elem['tra'][i]: titan.axvline(t[i])
+# for i in range(0, len(t)):      
+#     if H_elem['tra'][i-1] > H_elem['tra'][i]: hyperion.axvline(t[i])
+#     if T_elem['tra'][i-1] > T_elem['tra'][i]: titan.axvline(t[i])
 
 plt.show()
