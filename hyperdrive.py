@@ -1,16 +1,16 @@
 from scipy.integrate import odeint
-from scipy.linalg import svd, hankel
-from scipy.signal import argrelmin
+from scipy.linalg import svd
 import numpy as np
 from numpy import dot, cross, pi
 from numpy.linalg import norm
-import csv
+import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 import matplotlib.gridspec as gs
 from math import sqrt, sin, cos, tan, asin, acos, atan, atan2, copysign
 from functools import partial
-import tables
+from tqdm import trange
+from time import perf_counter
 
 # Lengths in AU-converted-to-km, times in days, masses scaled to saturn (S_m)
 #
@@ -47,48 +47,6 @@ H_CAB = (H_C - H_A)/H_B
 H_ABC = (H_A - H_B)/H_C
 
 T_A = T_B = T_C = 0.3414
-
-#Initial values for the positions and velocities, from HORIZONS on 2005-09-25
-T_r_0 = [-4.088407843090480E-03 *AU,
-         -6.135746299499617E-03 *AU,
-         3.570710328903993E-03 *AU]
-
-H_r_0 = [-9.556008109223760E-03 *AU,
-         -6.330869216667536E-04 *AU,
-         1.293277241526503E-03 *AU]
-
-T_theta_0 = [0,0,0]
-H_theta_0 = [0,0,0]
-
-# From Harbison, Cassini flyby on 2005-09-25
-H_euler_0 = [2.989, 1.685, 1.641]
-H_wisdom_0 = [0,0,0]
-H_anom_0 = 2.780523844083934E+02
-
-
-T_v_0 = [2.811008677848850E-03 *AU,
-         -1.470816650319267E-03 *AU,
-         4.806729268010478E-04 *AU]
-
-H_v_0 = [6.768811686476851E-04 *AU,
-         -2.639837861571281E-03 *AU,
-         1.253587766343593E-03 *AU]
-
-# Titan's rotation is orbit-synchronous, so it only rotates around its
-# principal axis. Since its axial tilt is zero, this is always normal
-# to the orbital plane.
-T_per = 1.594772769327679E+01 #From HORIZONS on 2005-09-25
-T_omega_0 = [0,0,2*pi/T_per]
-
-# From Harbison, Cassini flyby on 2005-09-25
-H_omega_0_mag = 72*pi/180
-H_omega_0 = [i * H_omega_0_mag for i in [0.902, 0.133, 0.411]]
-
-# Initials used by Sinclair et al.
-# T_r_0 = [-0.0075533871, 0.0025250254, -0.0000462204]
-# T_v_0 = [-0.0010017342, -0.0031443009, 0.0000059503]
-# H_r_0 = [-0.0006436995, 0.0099145485, 0.0000357506]
-# H_v_0 = [-0.0029182723, 0.0000521415, -0.0000356145]
 
 def wis(euler):
     """Transform from Euler angles to Wisdom angles"""
@@ -130,17 +88,44 @@ def bod2spc(q, X):
     qc = [q[0], -q[1], -q[2], -q[3]]
     return q_prod(q, q_prod(X, qc))
 
-# Use Wisdom angles instead of Euler angles!
-H_wisdom_0 = wis(H_euler_0)
+def initialise():
+    #Initial values for the positions and velocities, from HORIZONS on 2005-09-25
+    T_r_0 = [-4.088407843090480E-03 *AU,
+             -6.135746299499617E-03 *AU,
+             3.570710328903993E-03 *AU]
 
-H_q_0 = [0,0,0,0]
-H_q_0[1:] = dircos(H_wisdom_0, H_anom_0)
+    H_r_0 = [-9.556008109223760E-03 *AU,
+             -6.330869216667536E-04 *AU,
+             1.293277241526503E-03 *AU]
 
-# H_qdot_0 = [1/2 * i for i in q_prod(H_q_0, H_omega_0)]
+    T_v_0 = [2.811008677848850E-03 *AU,
+             -1.470816650319267E-03 *AU,
+             4.806729268010478E-04 *AU]
 
-# Combine initial conditions into a handy vector
-y0 = T_r_0 + H_r_0 + \
-     T_v_0 + H_v_0 + H_omega_0 + H_q_0
+    H_v_0 = [6.768811686476851E-04 *AU,
+             -2.639837861571281E-03 *AU,
+             1.253587766343593E-03 *AU]
+
+    # Initials used by Sinclair et al.
+    # T_r_0 = [-0.0075533871, 0.0025250254, -0.0000462204]
+    # T_v_0 = [-0.0010017342, -0.0031443009, 0.0000059503]
+    # H_r_0 = [-0.0006436995, 0.0099145485, 0.0000357506]
+    # H_v_0 = [-0.0029182723, 0.0000521415, -0.0000356145]
+
+    # From Harbison, Cassini flyby on 2005-09-25
+    H_omega_0_mag = 72*pi/180
+    H_omega_0 = [i * H_omega_0_mag for i in [0.902, 0.133, 0.411]]
+
+    # From Harbison, Cassini flyby on 2005-09-25
+    H_euler_0 = [2.989, 1.685, 1.641]
+    H_wisdom_0 = wis(H_euler_0)
+    H_anom_0 = 2.780523844083934E+02
+
+    H_q_0 = [0.0, 0.0, 0.0, 0.0]
+    H_q_0[1:] = dircos(H_wisdom_0, H_anom_0)
+
+    # Combine initial conditions into a handy vector
+    return T_r_0 + H_r_0 + T_v_0 + H_v_0 + H_omega_0 + H_q_0
 
 def ecc(pos, vel, m):
     """Calculate the eccentricity vector from the state vector and mass"""
@@ -186,7 +171,6 @@ def kepler(pos, vel, m):
             lan = 2*pi - lan[i]
     n = 'sma, ecc, inc, lan, tra, arg, mm'
     return np.rec.fromarrays([sma, ecc, inc, lan, tra, arg, mm], names = n)
-
 
 def eulerderivs(wisdom, omega):
     """Calculate the time-derivatives of the euler angles due to ang. vel."""
@@ -235,7 +219,7 @@ def dictpoinsect(d, keys, af, f):
         out[i] = d[i][through_sect]
     return out
 
-def f(y, t0):
+def f(y, t0, titanic):
     """Vector of Titan's velocity, Hyperion's velocity, T's acc, H's acc"""
     [T_r, H_r, T_v, H_v, H_omega] = \
     [y[i:i+3] for i in range(0, len(y)-4, 3)]
@@ -275,7 +259,7 @@ def f(y, t0):
 
     # print('Q: ', q_norm(H_q))
     H_qdot = [(1/2)*i for i in q_prod(bod2spc(H_q,
-        np.concatenate(([0], H_omega))), H_q)]
+        np.concatenate(([0.0], H_omega))), H_q)]
     # print('Qdot: ', q_norm(H_qdot))
 
     # Include the influence of titan on the rotation of Hyperion. Or don't.
@@ -284,7 +268,7 @@ def f(y, t0):
                     (3*G*T_m/HT_sep_**3)*HT_dircos[0]*HT_dircos[2],
                     (3*G*T_m/HT_sep_**3)*HT_dircos[0]*HT_dircos[1]]
     else:
-        HT_alpha = [0, 0, 0]
+        HT_alpha = [0.0, 0.0, 0.0]
 
     H_alpha = [H_BCA*(H_omega[1]*H_omega[2] - \
                    (3*G*S_m/H_r_**3)*H_dircos[1]*H_dircos[2] - HT_alpha[0]),
@@ -296,180 +280,202 @@ def f(y, t0):
     vec = np.concatenate((T_v, H_v, T_a, H_a, H_alpha, H_qdot))
     return vec
 
-# Initial and final times and timestep
-t_i = 0
-t_f = 1600
-dt = 0.001
-t = np.arange(t_i, t_f, dt)
+def drive(t_f=160, dt=0.001, chunksize=10000, titanic=True):
+    print("Running simulation to {} days in chunks of {:.0f} days."\
+        .format(t_f, chunksize*dt), flush=1)
+    print("Including" if titanic else "Ignoring",
+        "the influence of Titan on the chaotic rotation of Hyperion.", flush=1)
+    start = perf_counter()
+    y0 = initialise()
 
-# Perform the integration and assign views for each quantity to dict rr.
-r = odeint(f, y0, t)
-quants = ('T_r', 'H_r','T_v', 'H_v', 'H_omega', 'H_q')
-longquants = ('T_x', 'T_y', 'T_z', 
-              'H_x', 'H_y', 'H_z',
-              'T_Vx', 'T_Vy', 'T_Vz',
-              'H_Vx', 'H_Vy', 'H_Vz',
-              'H_O1', 'H_O2', 'H_O3',
-              'H_Q0', 'H_Q1', 'H_Q2', 'H_Q3')
-rr = dict(**{quants[i]:r[:,i*3:i*3+3] for i in range(0,len(quants)-1)}, 
-          H_q=r[-4:-1],
-          **{longquants[i]:r[:,i:i+1] for i in range(0,len(longquants))})
+    stepsperday = 1/dt
+    t = np.arange(0, t_f, dt)
+    assert len(t) % chunksize == 0, \
+        "Total number of timesteps must divide evenly into chunks"
 
-sep = norm(rr['H_r']-rr['T_r'], axis=1)
+    quants = np.append(np.repeat(('T_r', 'H_r','T_v', 'H_v', 'H_omega'), 3),
+                       np.repeat(('H_q'), 4))
+    comps = np.append(np.tile(('x', 'y', 'z'), 4), # Cartesian elements
+                      ('1', '2', '3', # H_omega
+                       '0', '1', '2', '3')) # H_q
+    
+    df0 = pd.DataFrame(columns=[quants, comps], index=[0.0], dtype=np.float64)
+    df0.loc[0] = y0
+    with pd.HDFStore('output.h5') as store:
+        store.put('sim', df0, format='t', append=False)
+        for i in trange(0, len(t), chunksize, unit='chunk', leave=1):
+            r = odeint(f, y0,
+                       t[i if i==0 else i-1:i+chunksize],
+                       (titanic,))
+            y0 = r[-1]
+            df = pd.DataFrame(
+                r[1:],
+                index=t[i+1 if i==0 else i:i+chunksize],
+                columns=[quants, comps],
+                dtype=np.float64
+                )
+            store.append('sim', df)
+            store.flush()
 
-H_elem = kepler(rr['H_r'], rr['H_v'], H_m)
-T_elem = kepler(rr['T_r'], rr['T_v'], T_m)
-
-H_elem_0 = H_elem[0]
-T_elem_0 = T_elem[0]
-
-# Single value decomposition, first constructing matrix of trajectories
-# dim = 80
-# traj = np.reshape(rr['H_T1'], (len(t)/dim, dim))
-# U, S, V = svd(traj, full_matrices=False)
-# print('dim', dim)
-# print(U.shape, S.shape, V.shape)
-# print(S)
-
-# H_poincare = dictpoinsect(rr, ['H_T1', 'H_T2', 'H_T3', 'H_O1', 'H_O2', 'H_O3'], H_elem.tra, 0)
-
-csvhead = ",".join(longquants)
-np.savetxt('outputq.csv', r, fmt='%.6e', delimiter=',', header=csvhead)
-
-fig = plt.figure(figsize=(8, 8), facecolor='white')
-fig.set_tight_layout(True)
-grid = gs.GridSpec(3, 3)
-plt.rcParams['axes.formatter.limits'] = [-5,5]
-
-orbits = plt.subplot(grid[0:2, 0:2])
-orbits.set_title('Path of simulated orbits')
-orbits.plot(rr['T_x'], rr['T_y'], rr['H_x'], rr['H_y'])
-orbits.plot(0,0, 'xr')
-orbits.axis([-2E6, 2E6, -2E6, 2E6])
-orbits.legend(('Titan', 'Hyperion'))
-
-seps = plt.subplot(grid[2, 0:3])
-seps.set_title('Magnitude of separation between Titan and Hyperion')
-# seps.set_xlabel('days')
-seps.set_ylabel('km')
-seps.plot(sep)
-
-info = plt.subplot(grid[0:2, -1])
-info.set_title('Info')
-info.axis('off')
-labels = [
-    'Hyp init e',
-    'Hyp mean e',
-    'Tit init e',
-    'Tit mean e',
-    'Init n/n',
-    'Mean n/n',
-    'Hyp mean incl',
-    'Max separation',
-    'Min separation'
-    ]
-text = [[i] for i in map(partial(round, ndigits=3), [
-    H_elem_0['ecc'],
-    np.mean(H_elem['ecc']),
-    T_elem_0['ecc'],
-    np.mean(T_elem['ecc']),
-    H_elem_0['mm']/T_elem_0['mm'],
-    np.mean(H_elem['mm']/T_elem['mm']),
-    np.mean(H_elem['inc'])])
-    ] + \
-    [[i] for i in map(partial(round, ndigits=5), [
-    np.amax(sep),
-    np.amin(sep)])
-    ]
-tab = info.table(rowLabels=labels,
-           cellText=text,
-           loc='upper right',
-           colWidths=[0.5]*2)
-#Whoever wrote the Table class hates legibility. Let's increase the row height
-for c in tab.properties()['child_artists']:
-    c.set_height(c.get_height()*2)
-
-# figps = plt.figure(figsize=(12, 3), facecolor='white')
-# gridps = gs.GridSpec(1, 4)
-# figps.set_tight_layout(True)
-
-# # prox = poinsect(sep, H_elem['tra'], 0)
-
-# hyp_o1_t1 = plt.subplot(gridps[:,0])
-# hyp_o1_t1.scatter(H_poincare['H_T1'], H_poincare['H_O1'], marker='.')
-# hyp_o1_t1.set_xlabel('Theta 1')
-# hyp_o1_t1.set_ylabel('d(Theta 1)/dt')
-# hyp_o1_t1.axis([0, 2*pi, -2, 2])
-
-# hyp_o2_t2 = plt.subplot(gridps[:,1])
-# hyp_o2_t2.scatter(H_poincare['H_T2'], H_poincare['H_O2'], marker='.')
-# hyp_o2_t2.set_xlabel('Theta 2')
-# hyp_o2_t2.set_ylabel('d(Theta 2)/dt')
-# hyp_o2_t2.axis([0, 2*pi, -2, 2])
-
-# hyp_o3_t3 = plt.subplot(gridps[:,2])
-# hyp_o3_t3.scatter(H_poincare['H_T3'], H_poincare['H_O3'], marker='.')
-# hyp_o3_t3.set_xlabel('Theta 3')
-# hyp_o3_t3.set_ylabel('d(Theta 3)/dt')
-# hyp_o3_t3.axis([0, 2*pi, -2, 2])
-
-# hyp_o_t = plt.subplot(gridps[:,3])
-# hyp_o_tter(poinsect(norm(rr['H_theta'], axis=1), H_elem['tra'], 0),
-#                 poinsect(norm(rr['H_omega'], axis=1), H_elem['tra'], 0),
-#                 marker='.')
-# hyp_o_t.set_xlabel('|Theta|')
-# hyp_o_t.set_ylabel('d|Theta|/dt')
+    end = perf_counter()
+    print("\nSimulation successfully completed in {:.2f}s.".format(end-start))
 
 
-###
+# sep = norm(rr['H_r']-rr['T_r'], axis=1)
 
-# figdel = plt.figure(figsize=(12, 4), facecolor='white')
-# griddel = gs.GridSpec(1, 3)
-# figdel.set_tight_layout(True)
+# H_elem = kepler(rr['H_r'], rr['H_v'], H_m)
+# T_elem = kepler(rr['T_r'], rr['T_v'], T_m)
 
-# delstep = 10
+# H_elem_0 = H_elem[0]
+# T_elem_0 = T_elem[0]
 
-# hyp_t1_del = plt.subplot(griddel[0,0])
-# hyp_t1_del.plot(H_poincare['H_T1'].flat[:-delstep:delstep],
-#                   H_poincare['H_T1'].flat[delstep::delstep])
-# hyp_t1_del.set_xlabel('Theta 1 @ t')
-# hyp_t1_del.set_ylabel('Theta 1 @ t + {}'.format(delstep))
-# hyp_t1_del.axis([0, 2*pi, 0, 2*pi])
+# # Single value decomposition, first constructing matrix of trajectories
+# # dim = 80
+# # traj = np.reshape(rr['H_T1'], (len(t)/dim, dim))
+# # U, S, V = svd(traj, full_matrices=False)
+# # print('dim', dim)
+# # print(U.shape, S.shape, V.shape)
+# # print(S)
 
-# hyp_t2_del = plt.subplot(griddel[0,1])
-# hyp_t2_del.plot(H_poincare['H_T2'].flat[:-delstep:delstep],
-#                   H_poincare['H_T2'].flat[delstep::delstep])
-# hyp_t2_del.set_xlabel('Theta 2 @ t')
-# hyp_t2_del.set_ylabel('Theta 2 @ t + {}'.format(delstep))
-# hyp_t2_del.axis([0, 2*pi, 0, 2*pi])
+# # H_poincare = dictpoinsect(rr, ['H_T1', 'H_T2', 'H_T3', 'H_O1', 'H_O2', 'H_O3'], H_elem.tra, 0)
 
-# hyp_t3_del = plt.subplot(griddel[0,2])
-# hyp_t3_del.plot(H_poincare['H_T3'].flat[:-delstep:delstep],
-#                   H_poincare['H_T3'].flat[delstep::delstep])
-# hyp_t3_del.set_xlabel('Theta 3 @ t')
-# hyp_t3_del.set_ylabel('Theta 3 @ t + {}'.format(delstep))
-# hyp_t3_del.axis([0, 2*pi, 0, 2*pi])
+# fig = plt.figure(figsize=(8, 8), facecolor='white')
+# fig.set_tight_layout(True)
+# grid = gs.GridSpec(3, 3)
+# plt.rcParams['axes.formatter.limits'] = [-5,5]
 
-# hyp_3D_del = plt.subplot(griddel[1:8,1:5])
+# orbits = plt.subplot(grid[0:2, 0:2])
+# orbits.set_title('Path of simulated orbits')
+# orbits.plot(rr['T_x'], rr['T_y'], rr['H_x'], rr['H_y'])
+# orbits.plot(0,0, 'xr')
+# orbits.axis([-2E6, 2E6, -2E6, 2E6])
+# orbits.legend(('Titan', 'Hyperion'))
 
-###
+# seps = plt.subplot(grid[2, 0:3])
+# seps.set_title('Magnitude of separation between Titan and Hyperion')
+# # seps.set_xlabel('days')
+# seps.set_ylabel('km')
+# seps.plot(sep)
 
-# peri = plt.subplot(grid[3,:])
-# peri.plot(t, (T_elem['lan']+T_elem['arg']) - (H_elem['lan']+H_elem['arg']))
+# info = plt.subplot(grid[0:2, -1])
+# info.set_title('Info')
+# info.axis('off')
+# labels = [
+#     'Hyp init e',
+#     'Hyp mean e',
+#     'Tit init e',
+#     'Tit mean e',
+#     'Init n/n',
+#     'Mean n/n',
+#     'Hyp mean incl',
+#     'Max separation',
+#     'Min separation'
+#     ]
+# text = [[i] for i in map(partial(round, ndigits=3), [
+#     H_elem_0['ecc'],
+#     np.mean(H_elem['ecc']),
+#     T_elem_0['ecc'],
+#     np.mean(T_elem['ecc']),
+#     H_elem_0['mm']/T_elem_0['mm'],
+#     np.mean(H_elem['mm']/T_elem['mm']),
+#     np.mean(H_elem['inc'])])
+#     ] + \
+#     [[i] for i in map(partial(round, ndigits=5), [
+#     np.amax(sep),
+#     np.amin(sep)])
+#     ]
+# tab = info.table(rowLabels=labels,
+#            cellText=text,
+#            loc='upper right',
+#            colWidths=[0.5]*2)
+# #Whoever wrote the Table class hates legibility. Let's increase the row height
+# for c in tab.properties()['child_artists']:
+#     c.set_height(c.get_height()*2)
 
-fig2 = plt.figure(figsize=(12, 3), facecolor='white')
-grid2 = gs.GridSpec(1, 4)
+# # figps = plt.figure(figsize=(12, 3), facecolor='white')
+# # gridps = gs.GridSpec(1, 4)
+# # figps.set_tight_layout(True)
 
-# titan = plt.subplot(grid2[0,:])
-# titan.plot(t, rr['T_O1'], t, rr['T_O2'], t, rr['T_O3'])
-# titan.axis([0, t[-1], -pi, pi])
+# # # prox = poinsect(sep, H_elem['tra'], 0)
 
-hyperion = plt.subplot(grid2[:,:])
-hyperion.plot(t, rr['H_Q0'], t, rr['H_Q1'], t, rr['H_Q2'], t, rr['H_Q3'])
-hyperion.axis([0, t[-1], -1, 1])
-hyperion.legend(('q_0', 'q_1', 'q_2', 'q_3'))
-# for i in range(0, len(t)):      
-#     if H_elem['tra'][i-1] > H_elem['tra'][i]: hyperion.axvline(t[i])
-#     if T_elem['tra'][i-1] > T_elem['tra'][i]: titan.axvline(t[i])
+# # hyp_o1_t1 = plt.subplot(gridps[:,0])
+# # hyp_o1_t1.scatter(H_poincare['H_T1'], H_poincare['H_O1'], marker='.')
+# # hyp_o1_t1.set_xlabel('Theta 1')
+# # hyp_o1_t1.set_ylabel('d(Theta 1)/dt')
+# # hyp_o1_t1.axis([0, 2*pi, -2, 2])
 
-plt.show()
+# # hyp_o2_t2 = plt.subplot(gridps[:,1])
+# # hyp_o2_t2.scatter(H_poincare['H_T2'], H_poincare['H_O2'], marker='.')
+# # hyp_o2_t2.set_xlabel('Theta 2')
+# # hyp_o2_t2.set_ylabel('d(Theta 2)/dt')
+# # hyp_o2_t2.axis([0, 2*pi, -2, 2])
+
+# # hyp_o3_t3 = plt.subplot(gridps[:,2])
+# # hyp_o3_t3.scatter(H_poincare['H_T3'], H_poincare['H_O3'], marker='.')
+# # hyp_o3_t3.set_xlabel('Theta 3')
+# # hyp_o3_t3.set_ylabel('d(Theta 3)/dt')
+# # hyp_o3_t3.axis([0, 2*pi, -2, 2])
+
+# # hyp_o_t = plt.subplot(gridps[:,3])
+# # hyp_o_tter(poinsect(norm(rr['H_theta'], axis=1), H_elem['tra'], 0),
+# #                 poinsect(norm(rr['H_omega'], axis=1), H_elem['tra'], 0),
+# #                 marker='.')
+# # hyp_o_t.set_xlabel('|Theta|')
+# # hyp_o_t.set_ylabel('d|Theta|/dt')
+
+
+# ###
+
+# # figdel = plt.figure(figsize=(12, 4), facecolor='white')
+# # griddel = gs.GridSpec(1, 3)
+# # figdel.set_tight_layout(True)
+
+# # delstep = 10
+
+# # hyp_t1_del = plt.subplot(griddel[0,0])
+# # hyp_t1_del.plot(H_poincare['H_T1'].flat[:-delstep:delstep],
+# #                   H_poincare['H_T1'].flat[delstep::delstep])
+# # hyp_t1_del.set_xlabel('Theta 1 @ t')
+# # hyp_t1_del.set_ylabel('Theta 1 @ t + {}'.format(delstep))
+# # hyp_t1_del.axis([0, 2*pi, 0, 2*pi])
+
+# # hyp_t2_del = plt.subplot(griddel[0,1])
+# # hyp_t2_del.plot(H_poincare['H_T2'].flat[:-delstep:delstep],
+# #                   H_poincare['H_T2'].flat[delstep::delstep])
+# # hyp_t2_del.set_xlabel('Theta 2 @ t')
+# # hyp_t2_del.set_ylabel('Theta 2 @ t + {}'.format(delstep))
+# # hyp_t2_del.axis([0, 2*pi, 0, 2*pi])
+
+# # hyp_t3_del = plt.subplot(griddel[0,2])
+# # hyp_t3_del.plot(H_poincare['H_T3'].flat[:-delstep:delstep],
+# #                   H_poincare['H_T3'].flat[delstep::delstep])
+# # hyp_t3_del.set_xlabel('Theta 3 @ t')
+# # hyp_t3_del.set_ylabel('Theta 3 @ t + {}'.format(delstep))
+# # hyp_t3_del.axis([0, 2*pi, 0, 2*pi])
+
+# # hyp_3D_del = plt.subplot(griddel[1:8,1:5])
+
+# ###
+
+# # peri = plt.subplot(grid[3,:])
+# # peri.plot(t, (T_elem['lan']+T_elem['arg']) - (H_elem['lan']+H_elem['arg']))
+
+# fig2 = plt.figure(figsize=(12, 3), facecolor='white')
+# grid2 = gs.GridSpec(1, 4)
+
+# # titan = plt.subplot(grid2[0,:])
+# # titan.plot(t, rr['T_O1'], t, rr['T_O2'], t, rr['T_O3'])
+# # titan.axis([0, t[-1], -pi, pi])
+
+# hyperion = plt.subplot(grid2[:,:])
+# hyperion.plot(t, rr['H_Q0'], t, rr['H_Q1'], t, rr['H_Q2'], t, rr['H_Q3'])
+# hyperion.axis([0, t[-1], -1, 1])
+# hyperion.legend(('q_0', 'q_1', 'q_2', 'q_3'))
+# # for i in range(0, len(t)):      
+# #     if H_elem['tra'][i-1] > H_elem['tra'][i]: hyperion.axvline(t[i])
+# #     if T_elem['tra'][i-1] > T_elem['tra'][i]: titan.axvline(t[i])
+
+# plt.show()
+
+if __name__ == "__main__":
+    drive()
