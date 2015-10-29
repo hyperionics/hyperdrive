@@ -9,8 +9,10 @@ import matplotlib.cm as cm
 import matplotlib.gridspec as gs
 from math import sqrt, sin, cos, tan, asin, acos, atan, atan2, copysign
 from functools import partial
+from itertools import repeat, chain
 from tqdm import trange
 from time import perf_counter
+from IPython.core.debugger import Tracer
 
 # Lengths in AU-converted-to-km, times in days, masses scaled to saturn (S_m)
 #
@@ -127,50 +129,11 @@ def initialise():
     # Combine initial conditions into a handy vector
     return T_r_0 + H_r_0 + T_v_0 + H_v_0 + H_omega_0 + H_q_0
 
-def ecc(pos, vel, m):
-    """Calculate the eccentricity vector from the state vector and mass"""
-    return cross(vel, cross(pos, vel))/(G*(S_m+m)) - pos/norm(pos)
-
 def rowdot(v1, v2):
     return np.einsum('ij, ij->i', v1, v2)
 
-def kepler(pos, vel, m):
-    """
-    Returns a dict of arrays of orbital elements (and other stuff) from arrays 
-    of position, velocity and mass. Angles are in radians.
-    """
-    R = norm(pos, axis=1)
-    V = norm(vel, axis=1)
-    h = cross(pos, vel)
-    k = [0,0,1]
-    n = cross(k, h)
-    mu = G*(S_m+m)
-    Vecc = cross(vel, cross(pos, vel))/(G*(S_m+m)) - pos/np.vstack([norm(pos, axis=1)]*3).T
-    # Semi-Major Axis
-    sma = 1/(2/R - V**2/mu)
-    # Eccentricity
-    ecc = norm(Vecc, axis=1)
-    # Inclination
-    inc = np.arccos(h[:,2]/norm(h, axis=1))
-    # Longitude of Ascending Node
-    lan = np.arccos(n[:,0]/norm(n, axis=1))
-    # True Anomaly
-    posdotvel = rowdot(pos, vel)
-    tra = np.arccos(rowdot(Vecc, pos)/(norm(Vecc, axis=1)*norm(pos, axis=1)))
-     # Argument of Periapsis    
-    arg = np.arccos(rowdot(n, Vecc)/(norm(n, axis=1)*norm(Vecc, axis=1)))
-    # Mean motion
-    mm = np.sqrt(mu/sma**3)/(2*pi)
-    # Make all the signs right
-    for i in range(0, len(R)):
-        if posdotvel[i] < 0:
-            tra[i] = 2*pi - tra[i]
-        if Vecc[i, 2] < 0:
-            arg[i] = 2*pi - arg[i]
-        if n[i, 1] < 0:
-            lan = 2*pi - lan[i]
-    n = 'sma, ecc, inc, lan, tra, arg, mm'
-    return np.rec.fromarrays([sma, ecc, inc, lan, tra, arg, mm], names = n)
+def dfdot(df1, df2):
+    return pd.Series(np.einsum('ij, ij->i', df1, df2), index=df1.index)
 
 def eulerderivs(wisdom, omega):
     """Calculate the time-derivatives of the euler angles due to ang. vel."""
@@ -280,7 +243,7 @@ def f(y, t0, titanic):
     vec = np.concatenate((T_v, H_v, T_a, H_a, H_alpha, H_qdot))
     return vec
 
-def drive(t_f=160, dt=0.001, chunksize=10000, titanic=True):
+def drive(t_f=160, dt=0.001, chunksize=10000, titanic=True, path='output.h5'):
     print("Running simulation to {} days in chunks of {:.0f} days."\
         .format(t_f, chunksize*dt), flush=1)
     print("Including" if titanic else "Ignoring",
@@ -301,7 +264,7 @@ def drive(t_f=160, dt=0.001, chunksize=10000, titanic=True):
     
     df0 = pd.DataFrame(columns=[quants, comps], index=[0.0], dtype=np.float64)
     df0.loc[0] = y0
-    with pd.HDFStore('output.h5') as store:
+    with pd.HDFStore(path) as store:
         store.put('sim', df0, format='t', append=False)
         for i in trange(0, len(t), chunksize, unit='chunk', leave=1):
             r = odeint(f, y0,
@@ -320,14 +283,62 @@ def drive(t_f=160, dt=0.001, chunksize=10000, titanic=True):
     end = perf_counter()
     print("\nSimulation successfully completed in {:.2f}s.".format(end-start))
 
+def sep(store, a='H', b='T', key=None):
+    if key is None: key = 'analysis/%s%ssep'%(a,b)
+    df_sep = store.sim['%s_r'%a] - store.sim['%s_r'%b]
+    store.put(key, df_sep)
+    return store.select(key)
 
-# sep = norm(rr['H_r']-rr['T_r'], axis=1)
+def ecc(store, body, key=None):
+    if key is None: key = 'analysis/%secc'%body
+    pos = store.sim['%s_r'%body]
+    pos_ = np.sqrt(np.square(pos).sum(axis=1))
+    vel = store.sim['%s_v'%body]
+    m = eval('%s_m'%body)
+    df_ecc = cross(vel, cross(pos, vel))/(G*(S_m+m)) - pos.div(pos_, axis=0)
+    store.put(key, df_ecc)
+    return store.select(key)
 
-# H_elem = kepler(rr['H_r'], rr['H_v'], H_m)
-# T_elem = kepler(rr['T_r'], rr['T_v'], T_m)
+def semi_major(store, body, key=None):
+    if key is None: key = 'analysis/%ssma'%body
+    pos = store.sim['%s_r'%body]
+    pos = np.sqrt(np.square(pos).sum(axis=1))
+    vel = store.sim['%s_v'%body]
+    vel = np.sqrt(np.square(vel).sum(axis=1))
+    mu = G * (S_m + eval('%s_m'%body))
+    df_sma = 1/(2/pos - vel**2/mu)
+    store.put(key, df_sma)
+    return store.select(key)
 
-# H_elem_0 = H_elem[0]
-# T_elem_0 = T_elem[0]
+def anom(store, body, key=None, e=None):
+    if key is None: key = 'analysis/%stra'%body
+    if e is None:
+        try:
+            e = store.select('analysis/%secc'%body)
+        except KeyError:
+            e = ecc(store, body, path)
+    pos = store.sim['%s_r'%body]
+    pos_ = np.sqrt(np.square(pos).sum(axis=1))
+    vel = store.sim['%s_v'%body]
+    e_ = np.sqrt(np.square(e).sum(axis=1))
+    df_tra = np.arccos(dfdot(e, pos)/(e_*pos_))
+    # This ought to correct the signs
+    df_tra[dfdot(pos, vel) < 0] = df_tra[dfdot(pos, vel) < 0]\
+        .apply(lambda x:-x)
+    store.put(key, df_tra)
+    return store.select(key)
+
+def meanmot(store, body, key=None, sma=None):
+    if key is None: key = 'analysis/%stra'%body
+    if sma is None:
+        try:
+            sma = store.select('analysis/%ssma'%body)
+        except KeyError:
+            sma = semi_major(store, body)
+    mu = G * (S_m + eval('%s_m'%body))
+    df_mm = np.sqrt(mu/sma**3)/(2*pi)
+    store.put(key, df_mm)
+    return store.select(key)
 
 # # Single value decomposition, first constructing matrix of trajectories
 # # dim = 80
@@ -339,58 +350,77 @@ def drive(t_f=160, dt=0.001, chunksize=10000, titanic=True):
 
 # # H_poincare = dictpoinsect(rr, ['H_T1', 'H_T2', 'H_T3', 'H_O1', 'H_O2', 'H_O3'], H_elem.tra, 0)
 
-# fig = plt.figure(figsize=(8, 8), facecolor='white')
-# fig.set_tight_layout(True)
-# grid = gs.GridSpec(3, 3)
-# plt.rcParams['axes.formatter.limits'] = [-5,5]
+def orbits(path='output.h5'):
 
-# orbits = plt.subplot(grid[0:2, 0:2])
-# orbits.set_title('Path of simulated orbits')
-# orbits.plot(rr['T_x'], rr['T_y'], rr['H_x'], rr['H_y'])
-# orbits.plot(0,0, 'xr')
-# orbits.axis([-2E6, 2E6, -2E6, 2E6])
-# orbits.legend(('Titan', 'Hyperion'))
+    with pd.HDFStore(path) as store:
 
-# seps = plt.subplot(grid[2, 0:3])
-# seps.set_title('Magnitude of separation between Titan and Hyperion')
-# # seps.set_xlabel('days')
-# seps.set_ylabel('km')
-# seps.plot(sep)
+        HT_sep = sep(store)
+        HT_sep_ = np.sqrt(np.square(HT_sep).sum(axis=1))
+        H_e = ecc(store, 'H')
+        T_e = ecc(store, 'T')
+        H_n = meanmot(store, 'H')
+        T_n = meanmot(store, 'T')
 
-# info = plt.subplot(grid[0:2, -1])
-# info.set_title('Info')
-# info.axis('off')
-# labels = [
-#     'Hyp init e',
-#     'Hyp mean e',
-#     'Tit init e',
-#     'Tit mean e',
-#     'Init n/n',
-#     'Mean n/n',
-#     'Hyp mean incl',
-#     'Max separation',
-#     'Min separation'
-#     ]
-# text = [[i] for i in map(partial(round, ndigits=3), [
-#     H_elem_0['ecc'],
-#     np.mean(H_elem['ecc']),
-#     T_elem_0['ecc'],
-#     np.mean(T_elem['ecc']),
-#     H_elem_0['mm']/T_elem_0['mm'],
-#     np.mean(H_elem['mm']/T_elem['mm']),
-#     np.mean(H_elem['inc'])])
-#     ] + \
-#     [[i] for i in map(partial(round, ndigits=5), [
-#     np.amax(sep),
-#     np.amin(sep)])
-#     ]
-# tab = info.table(rowLabels=labels,
-#            cellText=text,
-#            loc='upper right',
-#            colWidths=[0.5]*2)
-# #Whoever wrote the Table class hates legibility. Let's increase the row height
-# for c in tab.properties()['child_artists']:
-#     c.set_height(c.get_height()*2)
+        fig = plt.figure(figsize=(8, 8), facecolor='white')
+        fig.set_tight_layout(True)
+        grid = gs.GridSpec(3, 3)
+        plt.rcParams['axes.formatter.limits'] = [-5,5]
+
+        orbits = plt.subplot(grid[0:2, 0:2])
+        orbits.set_title('Path of simulated orbits')
+        T_r = store.sim['T_r']
+        H_r = store.sim['H_r']
+        orbits.plot(T_r.x, T_r.y, H_r.x, H_r.y)
+        orbits.plot(0,0, 'xr')
+        orbits.axis([-2E6, 2E6, -2E6, 2E6])
+        orbits.set_xlabel('km')
+        orbits.set_ylabel('km')
+        orbits.legend(('Titan', 'Hyperion'))
+
+        seps = plt.subplot(grid[2, 0:3])
+        seps.set_title('Magnitude of separation between Titan and Hyperion')
+        seps.set_xlabel('days')
+        seps.set_ylabel('km')
+        seps.plot(HT_sep.index, np.sqrt(np.square(HT_sep).sum(axis=1)))
+
+        info = plt.subplot(grid[0:2, -1])
+        info.set_title('Info')
+        info.axis('off')
+        labels = [
+            'Hyp init e',
+            'Hyp final e',
+            'Tit init e',
+            'Tit final e',
+            'Init n/n',
+            'Final n/n',
+            'Max separation',
+            'Min separation'
+            ]
+        text = [["{:.3g}".format(i)] for i in [
+            norm(H_e.iloc[0]), # We round these to 3sf...
+            norm(H_e.iloc[-1]),
+            norm(T_e.iloc[0]),
+            norm(T_e.iloc[-1]),
+            H_n.iloc[0]/T_n.iloc[0],
+            H_n.iloc[-1]/T_n.iloc[-1],
+            HT_sep_.max(), # And show these in exponential form
+            HT_sep_.min()
+            ]
+        ]
+        tab = info.table(rowLabels=labels,
+                   cellText=text,
+                   loc='upper right',
+                   colWidths=[0.5]*2)
+        # Whoever wrote the Table class hates legibility. 
+        # Let's increase the row height:
+        for c in tab.properties()['child_artists']:
+            c.set_height(c.get_height()*2)
+
+    plt.show()
+
+    return plt.gcf()
+
+
 
 # # figps = plt.figure(figsize=(12, 3), facecolor='white')
 # # gridps = gs.GridSpec(1, 4)
