@@ -4,6 +4,7 @@ import numpy as np
 from numpy import dot, cross, pi
 from numpy.linalg import norm
 import pandas as pd
+from pandas.tools.plotting import lag_plot
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 import matplotlib.gridspec as gs
@@ -13,6 +14,7 @@ from itertools import repeat, chain
 from tqdm import trange
 from time import perf_counter
 from IPython.core.debugger import Tracer
+import seaborn as sns
 
 # Lengths in AU-converted-to-km, times in days, masses scaled to saturn (S_m)
 #
@@ -209,14 +211,6 @@ def f(y, t0, titanic):
           (T_m * HT_sep)/norm(HT_sep)**3) + \
           SH_flat + TH_flat
 
-    H_ecc = ecc(H_r, H_v, H_m)
-    T_ecc = ecc(T_r, T_v, T_m)
-
-    H_anom = acos(dot(H_ecc, H_r)/(norm(H_ecc)*norm(H_r)))
-    if dot(H_r, H_v) < 0: H_anom = 2*pi - H_anom
-    T_anom = acos(dot(T_ecc, T_r)/(norm(T_ecc)*norm(T_r)))
-    if dot(T_r, T_v) < 0: T_anom = 2*pi - T_anom
-
     H_dircos = H_q[1:]
     HT_dircos = [HT_sep[i]/HT_sep_ for i in range(0,3)]
 
@@ -251,7 +245,6 @@ def drive(t_f=160, dt=0.001, chunksize=10000, titanic=True, path='output.h5'):
     start = perf_counter()
     y0 = initialise()
 
-    stepsperday = 1/dt
     t = np.arange(0, t_f, dt)
     assert len(t) % chunksize == 0, \
         "Total number of timesteps must divide evenly into chunks"
@@ -263,7 +256,7 @@ def drive(t_f=160, dt=0.001, chunksize=10000, titanic=True, path='output.h5'):
                        '0', '1', '2', '3')) # H_q
     
     df0 = pd.DataFrame(columns=[quants, comps], index=[0.0], dtype=np.float64)
-    df0.loc[0] = y0
+    df0.iloc[0] = y0
     with pd.HDFStore(path) as store:
         store.put('sim', df0, format='t', append=False)
         for i in trange(0, len(t), chunksize, unit='chunk', leave=1):
@@ -284,39 +277,34 @@ def drive(t_f=160, dt=0.001, chunksize=10000, titanic=True, path='output.h5'):
     print("\nSimulation successfully completed in {:.2f}s.".format(end-start))
 
 def sep(store, a='H', b='T', key=None):
-    if key is None: key = 'analysis/%s%ssep'%(a,b)
-    df_sep = store.sim['%s_r'%a] - store.sim['%s_r'%b]
+    if key is None: key = 'analysis/%s%ssep' % (a,b)
+    df_sep = store.sim['%s_r' % a] - store.sim['%s_r' % b]
     store.put(key, df_sep)
     return store.select(key)
 
 def ecc(store, body, key=None):
-    if key is None: key = 'analysis/%secc'%body
-    pos = store.sim['%s_r'%body]
+    if key is None: key = 'analysis/%secc' % body
+    pos = store.sim['%s_r' % body]
     pos_ = np.sqrt(np.square(pos).sum(axis=1))
-    vel = store.sim['%s_v'%body]
-    m = eval('%s_m'%body)
+    vel = store.sim['%s_v' % body]
+    m = eval('%s_m' % body)
     df_ecc = cross(vel, cross(pos, vel))/(G*(S_m+m)) - pos.div(pos_, axis=0)
     store.put(key, df_ecc)
     return store.select(key)
 
 def semi_major(store, body, key=None):
-    if key is None: key = 'analysis/%ssma'%body
-    pos = store.sim['%s_r'%body]
+    if key is None: key = 'analysis/%ssma' % body
+    pos = store.sim['%s_r' % body]
     pos = np.sqrt(np.square(pos).sum(axis=1))
-    vel = store.sim['%s_v'%body]
+    vel = store.sim['%s_v' % body]
     vel = np.sqrt(np.square(vel).sum(axis=1))
     mu = G * (S_m + eval('%s_m'%body))
     df_sma = 1/(2/pos - vel**2/mu)
     store.put(key, df_sma)
     return store.select(key)
 
-def anom(store, body, key=None, e=None):
-    if key is None: key = 'analysis/%stra'%body
-    if e is None:
-        try:
-            e = store.select('analysis/%secc'%body)
-        except KeyError:
-            e = ecc(store, body, path)
+def anom(store, body, e, key=None):
+    if key is None: key = 'analysis/%stra' % body
     pos = store.sim['%s_r'%body]
     pos_ = np.sqrt(np.square(pos).sum(axis=1))
     vel = store.sim['%s_v'%body]
@@ -324,17 +312,12 @@ def anom(store, body, key=None, e=None):
     df_tra = np.arccos(dfdot(e, pos)/(e_*pos_))
     # This ought to correct the signs
     df_tra[dfdot(pos, vel) < 0] = df_tra[dfdot(pos, vel) < 0]\
-        .apply(lambda x:-x)
+        .apply(lambda x:2*pi-x)
     store.put(key, df_tra)
     return store.select(key)
 
-def meanmot(store, body, key=None, sma=None):
+def meanmot(store, body, sma, key=None):
     if key is None: key = 'analysis/%stra'%body
-    if sma is None:
-        try:
-            sma = store.select('analysis/%ssma'%body)
-        except KeyError:
-            sma = semi_major(store, body)
     mu = G * (S_m + eval('%s_m'%body))
     df_mm = np.sqrt(mu/sma**3)/(2*pi)
     store.put(key, df_mm)
@@ -358,12 +341,14 @@ def orbits(path='output.h5'):
         HT_sep_ = np.sqrt(np.square(HT_sep).sum(axis=1))
         H_e = ecc(store, 'H')
         T_e = ecc(store, 'T')
-        H_n = meanmot(store, 'H')
-        T_n = meanmot(store, 'T')
+        H_a = semi_major(store, 'H')
+        T_a = semi_major(store, 'T')
+        H_n = meanmot(store, 'H', H_a)
+        T_n = meanmot(store, 'T', T_a)
 
-        fig = plt.figure(figsize=(8, 8), facecolor='white')
+        fig = plt.figure(figsize=(8, 10))
         fig.set_tight_layout(True)
-        grid = gs.GridSpec(3, 3)
+        grid = gs.GridSpec(4, 3)
         plt.rcParams['axes.formatter.limits'] = [-5,5]
 
         orbits = plt.subplot(grid[0:2, 0:2])
@@ -381,7 +366,13 @@ def orbits(path='output.h5'):
         seps.set_title('Magnitude of separation between Titan and Hyperion')
         seps.set_xlabel('days')
         seps.set_ylabel('km')
-        seps.plot(HT_sep.index, np.sqrt(np.square(HT_sep).sum(axis=1)))
+        seps.plot(HT_sep.index, HT_sep_)
+
+        quaternions = plt.subplot(grid[3, 0:3])
+        quaternions.set_title('Elements of rotation quaternion of Hyperion')
+        H_q = store.sim['H_q']
+        for i in range(4):
+            quaternions.plot(H_q.index, H_q[str(i)])
 
         info = plt.subplot(grid[0:2, -1])
         info.set_title('Info')
@@ -418,8 +409,22 @@ def orbits(path='output.h5'):
 
     plt.show()
 
-    return plt.gcf()
+def q_delays(path='output.h5'):
 
+    with pd.HDFStore(path) as store:
+
+        figqd = plt.figure(figsize=(12,3))
+        gridqd = gs.GridSpec(1,4)
+        figqd.set_tight_layout(True)
+
+        axes = []
+
+        for i in range(4):
+            axes.append(plt.subplot(gridqd[0,i]))
+            axes[i].set_title('q_%s' % i)
+            lag_plot(store.sim.H_q[str(i)])
+
+    plt.show()
 
 
 # # figps = plt.figure(figsize=(12, 3), facecolor='white')
