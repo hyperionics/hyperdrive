@@ -1,5 +1,6 @@
 from scipy.integrate import odeint
-from scipy.linalg import svd
+from scipy.linalg import svd, hankel
+from scipy.signal import argrelmin, argrelmax
 import numpy as np
 from numpy import dot, cross, pi
 from numpy.linalg import norm
@@ -8,13 +9,15 @@ from pandas.tools.plotting import lag_plot
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 import matplotlib.gridspec as gs
+from mpl_toolkits.mplot3d import Axes3D
 from math import sqrt, sin, cos, tan, asin, acos, atan, atan2, copysign
 from functools import partial
 from itertools import repeat, chain
 from tqdm import trange
 from time import perf_counter
-from IPython.core.debugger import Tracer
 import seaborn as sns
+from IPython.core.debugger import Tracer
+
 
 # Lengths in AU-converted-to-km, times in days, masses scaled to saturn (S_m)
 #
@@ -158,42 +161,11 @@ def flattenacc(pos, R, J2):
         sin(theta)**2*cos(theta)
     return np.multiply(3*J2*G*R**2/r**4, [x, y, z])
 
-def poinsect(a, af, f):
-    through_sect = np.full((len(af),), False, dtype=bool)
-    for i in range(0,len(af)):
-        if f == 0:
-            if af[i-1] > af[i]:
-                through_sect[i] = True
-        else:
-            if af[i-1] < f < af[i]:
-                through_sect[i] = True
-    out = a[through_sect]
-    return out
-
-def dictpoinsect(d, keys, af, f):
-    through_sect = np.full((len(af),), False, dtype=bool)
-    for i in range(0,len(af)):
-        if f == 0:
-            if af[i-1] > af[i]:
-                through_sect[i] = True
-        else:
-            if af[i-1] < f < af[i]:
-                through_sect[i] = True
-    out = {}
-    for i in keys:
-        out[i] = d[i][through_sect]
-    return out
-
 def f(y, t0, titanic):
     """Vector of Titan's velocity, Hyperion's velocity, T's acc, H's acc"""
     [T_r, H_r, T_v, H_v, H_omega] = \
     [y[i:i+3] for i in range(0, len(y)-4, 3)]
     H_q = y[-4:]
-
-    # for i in [T_theta, H_theta, H_wisdom]:
-    #     for j in range(0,3):
-    #         if np.isclose(i[j], 0): i[j] = int(0)
-    #         i[j] = atan2(sin(i[j]), cos(i[j]))
 
     H_r_ = norm(H_r)
     HT_sep = H_r - T_r
@@ -214,10 +186,8 @@ def f(y, t0, titanic):
     H_dircos = H_q[1:]
     HT_dircos = [HT_sep[i]/HT_sep_ for i in range(0,3)]
 
-    # print('Q: ', q_norm(H_q))
     H_qdot = [(1/2)*i for i in q_prod(bod2spc(H_q,
         np.concatenate(([0.0], H_omega))), H_q)]
-    # print('Qdot: ', q_norm(H_qdot))
 
     # Include the influence of titan on the rotation of Hyperion. Or don't.
     if titanic:
@@ -323,22 +293,13 @@ def meanmot(store, body, sma, key=None):
     store.put(key, df_mm)
     return store.select(key)
 
-# # Single value decomposition, first constructing matrix of trajectories
-# # dim = 80
-# # traj = np.reshape(rr['H_T1'], (len(t)/dim, dim))
-# # U, S, V = svd(traj, full_matrices=False)
-# # print('dim', dim)
-# # print(U.shape, S.shape, V.shape)
-# # print(S)
-
-# # H_poincare = dictpoinsect(rr, ['H_T1', 'H_T2', 'H_T3', 'H_O1', 'H_O2', 'H_O3'], H_elem.tra, 0)
-
 def orbits(path='output.h5'):
 
     with pd.HDFStore(path) as store:
 
         HT_sep = sep(store)
-        HT_sep_ = np.sqrt(np.square(HT_sep).sum(axis=1))
+        HT_sep_ = np.sqrt(np.square(HT_sep).sum(axis=1)).values[::1000]
+        HT_sep_index = np.array(HT_sep.index[::1000], dtype=int)
         H_e = ecc(store, 'H')
         T_e = ecc(store, 'T')
         H_a = semi_major(store, 'H')
@@ -366,7 +327,23 @@ def orbits(path='output.h5'):
         seps.set_title('Magnitude of separation between Titan and Hyperion')
         seps.set_xlabel('days')
         seps.set_ylabel('km')
-        seps.plot(HT_sep.index, HT_sep_)
+        N = 64
+        sep_mean = np.convolve(HT_sep_, np.ones((N,))/N, mode='same')
+        sep_mean[:N//2] = np.nan
+        sep_mean[-N//2:] = np.nan
+        sep_min = []
+        sep_max = []
+        sep_min_idx = argrelmin(HT_sep_, order=N//2, mode='clip')[0]
+        sep_max_idx = argrelmax(HT_sep_, order=N//2, mode='clip')[0]
+        for i in range(len(HT_sep_)):
+            nearest_min_idx = sep_min_idx[(np.abs(sep_min_idx - i)).argmin()]
+            sep_min.append(HT_sep_[nearest_min_idx])
+            nearest_max_idx = sep_max_idx[(np.abs(sep_max_idx - i)).argmin()]
+            sep_max.append(HT_sep_[nearest_max_idx])
+        seps.plot(HT_sep_index, sep_mean)
+        seps.fill_between(HT_sep_index, sep_min, sep_max,
+                          alpha=0.3)
+        # seps.plot(HT_sep_index, HT_sep_, alpha=0.5, color='#4C72B0')
 
         quaternions = plt.subplot(grid[3, 0:3])
         quaternions.set_title('Elements of rotation quaternion of Hyperion')
@@ -409,108 +386,41 @@ def orbits(path='output.h5'):
 
     plt.show()
 
-def q_delays(path='output.h5'):
+def q_svd(i, n, J=None, drop=1500, path='output.h5'):
+
+    #WORK IN PROGRESS
+    if J is None: J = n
 
     with pd.HDFStore(path) as store:
+        quat = store.sim.H_q[str(i)]
+        assert len(quat) % n == 0
+        normn = len(quat) - (n-1)
+        traj = normn**-1/2
+        hankel(quat, np.zeros(n))[::J]
+        U, s, V = svd(traj, False)
+        m = 2 # embedding dimension
+        S = np.diag(s[0:m])
+        print(s)
+        recon = dot(U[:,0:m], dot(S, V[0:m,:]))
 
-        figqd = plt.figure(figsize=(12,3))
-        gridqd = gs.GridSpec(1,4)
-        figqd.set_tight_layout(True)
+        fig = plt.figure(figsize=(4,4))
+        fig.set_tight_layout(True)
 
-        axes = []
+        axes = plt.plot(quat.index[::J], recon[:,0], quat.index[::J], quat[::J])
 
-        for i in range(4):
-            axes.append(plt.subplot(gridqd[0,i]))
-            axes[i].set_title('q_%s' % i)
-            lag_plot(store.sim.H_q[str(i)])
+        embed = []
+        for i in range(m):
+            embed.append(np.zeros(traj.shape[0]-drop))
+            for j in range(traj.shape[0]-drop):
+                embed[i][j] = np.inner(V[:,i], traj[j])
 
-    plt.show()
+        figatt = plt.figure(figsize=(8,8))
+        figatt.set_tight_layout(True)
 
+        axesatt = figatt.add_subplot(111)
+        axesatt.plot(embed[0], embed[1])
 
-# # figps = plt.figure(figsize=(12, 3), facecolor='white')
-# # gridps = gs.GridSpec(1, 4)
-# # figps.set_tight_layout(True)
-
-# # # prox = poinsect(sep, H_elem['tra'], 0)
-
-# # hyp_o1_t1 = plt.subplot(gridps[:,0])
-# # hyp_o1_t1.scatter(H_poincare['H_T1'], H_poincare['H_O1'], marker='.')
-# # hyp_o1_t1.set_xlabel('Theta 1')
-# # hyp_o1_t1.set_ylabel('d(Theta 1)/dt')
-# # hyp_o1_t1.axis([0, 2*pi, -2, 2])
-
-# # hyp_o2_t2 = plt.subplot(gridps[:,1])
-# # hyp_o2_t2.scatter(H_poincare['H_T2'], H_poincare['H_O2'], marker='.')
-# # hyp_o2_t2.set_xlabel('Theta 2')
-# # hyp_o2_t2.set_ylabel('d(Theta 2)/dt')
-# # hyp_o2_t2.axis([0, 2*pi, -2, 2])
-
-# # hyp_o3_t3 = plt.subplot(gridps[:,2])
-# # hyp_o3_t3.scatter(H_poincare['H_T3'], H_poincare['H_O3'], marker='.')
-# # hyp_o3_t3.set_xlabel('Theta 3')
-# # hyp_o3_t3.set_ylabel('d(Theta 3)/dt')
-# # hyp_o3_t3.axis([0, 2*pi, -2, 2])
-
-# # hyp_o_t = plt.subplot(gridps[:,3])
-# # hyp_o_tter(poinsect(norm(rr['H_theta'], axis=1), H_elem['tra'], 0),
-# #                 poinsect(norm(rr['H_omega'], axis=1), H_elem['tra'], 0),
-# #                 marker='.')
-# # hyp_o_t.set_xlabel('|Theta|')
-# # hyp_o_t.set_ylabel('d|Theta|/dt')
-
-
-# ###
-
-# # figdel = plt.figure(figsize=(12, 4), facecolor='white')
-# # griddel = gs.GridSpec(1, 3)
-# # figdel.set_tight_layout(True)
-
-# # delstep = 10
-
-# # hyp_t1_del = plt.subplot(griddel[0,0])
-# # hyp_t1_del.plot(H_poincare['H_T1'].flat[:-delstep:delstep],
-# #                   H_poincare['H_T1'].flat[delstep::delstep])
-# # hyp_t1_del.set_xlabel('Theta 1 @ t')
-# # hyp_t1_del.set_ylabel('Theta 1 @ t + {}'.format(delstep))
-# # hyp_t1_del.axis([0, 2*pi, 0, 2*pi])
-
-# # hyp_t2_del = plt.subplot(griddel[0,1])
-# # hyp_t2_del.plot(H_poincare['H_T2'].flat[:-delstep:delstep],
-# #                   H_poincare['H_T2'].flat[delstep::delstep])
-# # hyp_t2_del.set_xlabel('Theta 2 @ t')
-# # hyp_t2_del.set_ylabel('Theta 2 @ t + {}'.format(delstep))
-# # hyp_t2_del.axis([0, 2*pi, 0, 2*pi])
-
-# # hyp_t3_del = plt.subplot(griddel[0,2])
-# # hyp_t3_del.plot(H_poincare['H_T3'].flat[:-delstep:delstep],
-# #                   H_poincare['H_T3'].flat[delstep::delstep])
-# # hyp_t3_del.set_xlabel('Theta 3 @ t')
-# # hyp_t3_del.set_ylabel('Theta 3 @ t + {}'.format(delstep))
-# # hyp_t3_del.axis([0, 2*pi, 0, 2*pi])
-
-# # hyp_3D_del = plt.subplot(griddel[1:8,1:5])
-
-# ###
-
-# # peri = plt.subplot(grid[3,:])
-# # peri.plot(t, (T_elem['lan']+T_elem['arg']) - (H_elem['lan']+H_elem['arg']))
-
-# fig2 = plt.figure(figsize=(12, 3), facecolor='white')
-# grid2 = gs.GridSpec(1, 4)
-
-# # titan = plt.subplot(grid2[0,:])
-# # titan.plot(t, rr['T_O1'], t, rr['T_O2'], t, rr['T_O3'])
-# # titan.axis([0, t[-1], -pi, pi])
-
-# hyperion = plt.subplot(grid2[:,:])
-# hyperion.plot(t, rr['H_Q0'], t, rr['H_Q1'], t, rr['H_Q2'], t, rr['H_Q3'])
-# hyperion.axis([0, t[-1], -1, 1])
-# hyperion.legend(('q_0', 'q_1', 'q_2', 'q_3'))
-# # for i in range(0, len(t)):      
-# #     if H_elem['tra'][i-1] > H_elem['tra'][i]: hyperion.axvline(t[i])
-# #     if T_elem['tra'][i-1] > T_elem['tra'][i]: titan.axvline(t[i])
-
-# plt.show()
+        plt.show()
 
 if __name__ == "__main__":
     drive()
