@@ -65,6 +65,15 @@ def wis(euler):
     w_psi = atan(-sin(e_phi)*sin(e_psi)/cos(e_phi))
     return [w_theta, w_phi, w_psi]
 
+def eul(wisdom):
+    """Transform from Wisdom angles to Euler angles"""
+    w_theta, w_phi, w_psi = wisdom[0:3]
+    e_theta = atan((cos(w_theta)*sin(w_psi) + sin(w_theta)*sin(w_phi)*cos(w_psi))/\
+        (cos(w_theta)*sin(w_phi)*cos(w_psi) - sin(w_theta)*sin(w_psi)))
+    e_phi = atan(1/(cos(w_phi)*cos(w_psi)))
+    e_psi = atan(-cos(w_phi)*sin(w_psi)/sin(w_phi))
+    return [e_theta, e_phi, e_psi]
+
 def dircos(wisdom, anom):
     """Calculate the directional cosines from a body towards Saturn"""
     theta, phi, psi = wisdom[0:3]
@@ -74,6 +83,7 @@ def dircos(wisdom, anom):
     return [alpha, beta, gamma]
 
 def q_prod(q, r):
+    """Calculate Hamilton product of two quaternions"""
     Q0 = q[0]*r[0] - dot(q[1:], r[1:])
     Q_1 = [q[0] * i for i in r[1:]]
     Q_2 = [r[0] * i for i in q[1:]]
@@ -81,16 +91,19 @@ def q_prod(q, r):
     return np.concatenate(([Q0], Q_))
 
 def q_norm(q):
+    """Calculate the norm of two quaternons"""
     Q = [q[0], q[1]*1j, q[2]*1j, q[3]*1j]
     QC = [q[0], q[1]*-1j, q[2]*-1j, q[3]*-1j]
     return np.dot(Q, QC).real
 
 def spc2bod(q, x):
+    """Switch from space- to body-system quaternions"""
     assert len(q) == len(x) == 4
     qc = [q[0], -q[1], -q[2], -q[3]]
     return q_prod(qc, q_prod(x, q))
 
 def bod2spc(q, X):
+    """Switch from body- to space-system quaternions"""
     assert len(q) == len(X) == 4
     qc = [q[0], -q[1], -q[2], -q[3]]
     return q_prod(q, q_prod(X, qc))
@@ -132,16 +145,27 @@ def initialise():
     H_q_0[1:] = dircos(H_wisdom_0, H_anom_0)
 
     # Combine initial conditions into a handy vector
-    return T_r_0 + H_r_0 + T_v_0 + H_v_0 + H_omega_0 + H_q_0
+    return T_r_0 + H_r_0 + T_v_0 + H_v_0 + \
+        H_euler_0 + H_wisdom_0 + H_omega_0 + H_omega_0 + H_q_0
 
 def rowdot(v1, v2):
+    """Row-wise dot product of two arrays"""
     return np.einsum('ij, ij->i', v1, v2)
 
 def dfdot(df1, df2):
+    """Row-wise dot product of two dataframes"""
     return pd.Series(np.einsum('ij, ij->i', df1, df2), index=df1.index)
 
-def eulerderivs(wisdom, omega):
-    """Calculate the time-derivatives of the euler angles due to ang. vel."""
+def euler_derivs(euler, omega):
+    """Calculate the time-derviatives of the euler angles due to ang.vel."""
+    theta, phi, psi = euler[0:3]
+    Dtheta = (omega[2]*cos(psi) - omega[0]*sin(psi))/cos(phi)
+    Dphi = omega[2]*sin(psi) + omega[0]*cos(psi)
+    Dpsi = omega[1] - Dtheta*sin(phi)
+    return [Dtheta, Dphi, Dpsi]
+
+def wisdom_derivs(wisdom, omega):
+    """Calculate the time-derivatives of the wisdom angles due to ang. vel."""
     assert len(wisdom) == len(omega) == 3
     theta, phi, psi = wisdom[0:3]
     Dtheta = (omega[0]*sin(psi) + omega[1]*cos(psi))/sin(phi)
@@ -149,7 +173,24 @@ def eulerderivs(wisdom, omega):
     Dpsi = omega[2] - Dtheta*cos(phi)
     return [Dtheta, Dphi, Dpsi]
 
+def euler_dircos(euler, nu):
+    """Directional cosines based on euler angles"""
+    theta, phi, psi = euler[0:3]
+    alpha = cos(theta - nu)*cos(psi) - sin(theta - nu)*cos(phi)*sin(psi)
+    beta = cos(theta - nu)*sin(-psi) - sin(theta - nu)*cos(phi)*cos(psi)
+    gamma = sin(theta - nu)*sin(phi)
+    return [alpha, beta, gamma]
+
+def wisdom_dircos(wisdom, nu):    
+    """Directional cosines based on wisdom angles"""
+    theta, phi, psi = wisdom[0:3]
+    alpha = cos(theta - nu)*cos(psi) - sin(theta - nu)*sin(phi)*sin(psi)
+    beta = sin(theta - nu)*cos(phi)
+    gamma = cos(theta - nu)*sin(psi) + sin(theta - nu)*sin(phi)*cos(psi)
+    return [alpha, beta, gamma]
+
 def flattenacc(pos, R, J2):
+    """Acceleration due to flattening terms"""
     r = norm(pos)
     theta = acos(pos[2]/r)
     phi = atan2(pos[1],pos[0])
@@ -163,7 +204,7 @@ def flattenacc(pos, R, J2):
 
 def f(y, t0, titanic):
     """Vector of Titan's velocity, Hyperion's velocity, T's acc, H's acc"""
-    [T_r, H_r, T_v, H_v, H_omega] = \
+    [T_r, H_r, T_v, H_v, H_euler, H_wisdom, H_a_omega, H_q_omega] = \
     [y[i:i+3] for i in range(0, len(y)-4, 3)]
     H_q = y[-4:]
 
@@ -183,11 +224,26 @@ def f(y, t0, titanic):
           (T_m * HT_sep)/norm(HT_sep)**3) + \
           SH_flat + TH_flat
 
-    H_dircos = H_q[1:]
+    ecc = cross(H_v, cross(H_r, H_v))/(G*S_m) - H_r/norm(H_r)
+    anom = acos(dot(ecc, H_r)/(norm(ecc)*norm(H_r)))
+    if dot(H_r, H_v) < 0: anom = 2*pi - anom
+
+    H_euler = np.arctan2(np.sin(H_euler), np.cos(H_euler))
+    H_wisdom = np.arctan2(np.sin(H_wisdom), np.cos(H_wisdom))
+
+    if abs(cos(H_wisdom[1])) <= pi/4:
+        H_a_dircos = euler_dircos(H_euler, anom)
+    else:
+        H_a_dircos = wisdom_dircos(H_wisdom, anom)
+
+    H_edot = euler_derivs(H_euler, H_a_omega)
+    H_wdot = wisdom_derivs(H_wisdom, H_a_omega)
+
+    H_q_dircos = H_q[1:]
     HT_dircos = [HT_sep[i]/HT_sep_ for i in range(0,3)]
 
     H_qdot = [(1/2)*i for i in q_prod(bod2spc(H_q,
-        np.concatenate(([0.0], H_omega))), H_q)]
+        np.concatenate(([0.0], H_q_omega))), H_q)]
 
     # Include the influence of titan on the rotation of Hyperion. Or don't.
     if titanic:
@@ -197,14 +253,21 @@ def f(y, t0, titanic):
     else:
         HT_alpha = [0.0, 0.0, 0.0]
 
-    H_alpha = [H_BCA*(H_omega[1]*H_omega[2] - \
-                   (3*G*S_m/H_r_**3)*H_dircos[1]*H_dircos[2] - HT_alpha[0]),
-               H_CAB*(H_omega[0]*H_omega[2] - \
-                   (3*G*S_m/H_r_**3)*H_dircos[0]*H_dircos[2] - HT_alpha[1]),
-               H_ABC*(H_omega[0]*H_omega[1] - \
-                   (3*G*S_m/H_r_**3)*H_dircos[0]*H_dircos[1] - HT_alpha[2])]
+    H_q_alpha = [H_BCA*(H_q_omega[1]*H_q_omega[2] - \
+                   (3*G*S_m/H_r_**3)*H_q_dircos[1]*H_q_dircos[2] - HT_alpha[0]),
+               H_CAB*(H_q_omega[0]*H_q_omega[2] - \
+                   (3*G*S_m/H_r_**3)*H_q_dircos[0]*H_q_dircos[2] - HT_alpha[1]),
+               H_ABC*(H_q_omega[0]*H_q_omega[1] - \
+                   (3*G*S_m/H_r_**3)*H_q_dircos[0]*H_q_dircos[1] - HT_alpha[2])]
 
-    vec = np.concatenate((T_v, H_v, T_a, H_a, H_alpha, H_qdot))
+    H_a_alpha = [H_BCA*(H_a_omega[1]*H_a_omega[2] - \
+                   (3*G*S_m/H_r_**3)*H_a_dircos[1]*H_a_dircos[2] - HT_alpha[0]),
+               H_CAB*(H_a_omega[0]*H_a_omega[2] - \
+                   (3*G*S_m/H_r_**3)*H_a_dircos[0]*H_a_dircos[2] - HT_alpha[1]),
+               H_ABC*(H_a_omega[0]*H_a_omega[1] - \
+                   (3*G*S_m/H_r_**3)*H_a_dircos[0]*H_a_dircos[1] - HT_alpha[2])]
+
+    vec = np.concatenate((T_v, H_v, T_a, H_a, H_edot, H_wdot, H_a_alpha, H_q_alpha, H_qdot))
     return vec
 
 def drive(t_f=160, dt=0.001, chunksize=10000, titanic=True, path='output.h5'):
@@ -219,14 +282,16 @@ def drive(t_f=160, dt=0.001, chunksize=10000, titanic=True, path='output.h5'):
     assert len(t) % chunksize == 0, \
         "Total number of timesteps must divide evenly into chunks"
 
-    quants = np.append(np.repeat(('T_r', 'H_r','T_v', 'H_v', 'H_omega'), 3),
+    quants = np.append(np.repeat(('T_r', 'H_r', 'T_v', 'H_v',
+                                  'H_euler', 'H_wisdom', 'H_a_omega', 'H_q_omega'), 3),
                        np.repeat(('H_q'), 4))
-    comps = np.append(np.tile(('x', 'y', 'z'), 4), # Cartesian elements
-                      ('1', '2', '3', # H_omega
-                       '0', '1', '2', '3')) # H_q
+    comps = np.concatenate((np.tile(('x', 'y', 'z'), 4), # Cartesian elements
+                      np.tile(('1', '2', '3'), 4), # Angular elements
+                      np.array(('0', '1', '2', '3')))) # H_q
     
     df0 = pd.DataFrame(columns=[quants, comps], index=[0.0], dtype=np.float64)
     df0.iloc[0] = y0
+
     with pd.HDFStore(path) as store:
         store.put('sim', df0, format='t', append=False)
         for i in trange(0, len(t), chunksize, unit='chunk', leave=1):
@@ -383,6 +448,51 @@ def orbits(path='output.h5'):
         # Let's increase the row height:
         for c in tab.properties()['child_artists']:
             c.set_height(c.get_height()*2)
+
+    plt.show()
+
+def poincare(path='output.h5'):
+    with pd.HDFStore(path) as store:
+        fig = plt.figure(figsize=(12, 4))
+        fig.set_tight_layout(True)
+        grid = gs.GridSpec(1, 3)
+
+        e = ecc(store, 'H')
+        nu = anom(store, 'H', e)
+
+        idx = nu.shift() > nu
+
+        o = store.sim['H_q_omega']
+        q = store.sim['H_q']
+
+        wo = store.sim['H_a_omega']
+        wt = store.sim['H_wisdom']
+
+        a = plt.subplot(grid[0])
+        a.scatter(wo['1'][idx], wt['1'][idx])
+        b = plt.subplot(grid[1])
+        b.scatter(wo['2'][idx], wt['2'][idx])
+        c = plt.subplot(grid[2])
+        c.scatter(wo['3'][idx], wt['3'][idx])
+    plt.show()
+
+
+def angle_test(path='output.h5'):
+    with pd.HDFStore(path) as store:
+        fig = plt.figure(figsize=(12, 9))
+        fig.set_tight_layout(True)
+        grid = gs.GridSpec(3, 1)
+        H_a_omega = store.sim['H_a_omega']
+        H_q_omega = store.sim['H_q_omega']
+
+        a = plt.subplot(grid[0])
+        a.plot(H_a_omega.index, H_a_omega)
+
+        q = plt.subplot(grid[1])
+        q.plot(H_q_omega.index, H_q_omega)
+
+        d = plt.subplot(grid[2])
+        d.plot(H_a_omega.index, H_a_omega - H_q_omega)
 
     plt.show()
 
