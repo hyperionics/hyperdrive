@@ -1,4 +1,4 @@
-from scipy.integrate import odeint
+from scipy.integrate import odeint, ode
 from scipy.linalg import svd, hankel
 from scipy.signal import argrelmin, argrelmax
 import numpy as np
@@ -13,7 +13,7 @@ from mpl_toolkits.mplot3d import Axes3D
 from math import sqrt, sin, cos, tan, asin, acos, atan, atan2, copysign
 from functools import partial
 from itertools import repeat, chain
-from tqdm import trange
+from tqdm import trange, tqdm
 from time import perf_counter
 import seaborn as sns
 from IPython.core.debugger import Tracer
@@ -202,7 +202,7 @@ def flattenacc(pos, R, J2):
         sin(theta)**2*cos(theta)
     return np.multiply(3*J2*G*R**2/r**4, [x, y, z])
 
-def f(y, t0, titanic):
+def f(t0, y, titanic):
     """Vector of Titan's velocity, Hyperion's velocity, T's acc, H's acc"""
     [T_r, H_r, T_v, H_v, H_euler, H_wisdom, H_a_omega, H_q_omega] = \
     [y[i:i+3] for i in range(0, len(y)-4, 3)]
@@ -292,13 +292,24 @@ def drive(t_f=160, dt=0.001, chunksize=10000, titanic=True, path='output.h5'):
     df0 = pd.DataFrame(columns=[quants, comps], index=[0.0], dtype=np.float64)
     df0.iloc[0] = y0
 
+    integrator = ode(f)
+    integrator.set_f_params((titanic,))
+    integrator.set_integrator('dopri5')
+    integrator.set_initial_value(y0)
+
     with pd.HDFStore(path) as store:
         store.put('sim', df0, format='t', append=False)
         for i in trange(0, len(t), chunksize, unit='chunk', leave=1):
-            r = odeint(f, y0,
-                       t[i if i==0 else i-1:i+chunksize],
-                       (titanic,))
-            y0 = r[-1]
+            # r = odeint(f, y0,
+            #            t[i if i==0 else i-1:i+chunksize],
+            #            (titanic,))
+            r = np.empty((0, len(quants)), float)
+            progress = tqdm(total=chunksize, desc="{}/{}".format(i//chunksize, len(t)//chunksize))
+            for j in t[i if i==0 else i-1:i+chunksize]:
+                r = np.vstack((r, integrator.integrate(j+dt)))
+                progress.update()
+            progress.close()
+            # y0 = r[-1]
             df = pd.DataFrame(
                 r[1:],
                 index=t[i+1 if i==0 else i:i+chunksize],
