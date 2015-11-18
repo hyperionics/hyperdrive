@@ -23,6 +23,10 @@ from IPython.core.debugger import Tracer
 #
 # Most quantities are [Body]_[property], S being Saturn, T being Titan,
 # H being Hyperion.
+#
+# NOTE:
+# In general, an underscore at the end of a name means the norm of a vector
+# quantity.
 
 AU = 149597871
 
@@ -56,7 +60,9 @@ H_ABC = (H_A - H_B)/H_C
 T_A = T_B = T_C = 0.3414
 
 def wis(euler):
-    """Transform from Euler angles to Wisdom angles"""
+    """
+    Transform from Euler angles to Wisdom angles
+    """
     assert len(euler) == 3
     e_theta, e_phi, e_psi = euler[0:3]
     w_theta = atan((cos(e_theta)*sin(e_psi) + sin(e_theta)*cos(e_phi)*cos(e_psi))/\
@@ -66,7 +72,10 @@ def wis(euler):
     return [w_theta, w_phi, w_psi]
 
 def dircos(wisdom, anom):
-    """Calculate the directional cosines from a body towards Saturn"""
+    """
+    Calculate the directional cosines from a body towards Saturn, given its
+    wisdom angles and true anomaly.
+    """
     theta, phi, psi = wisdom[0:3]
     alpha = cos(theta - anom)*cos(psi) - sin(theta - anom)*sin(phi)*sin(psi)
     beta = sin(theta - anom)*cos(phi)
@@ -74,6 +83,9 @@ def dircos(wisdom, anom):
     return [alpha, beta, gamma]
 
 def q_prod(q, r):
+    """
+    Find the Hamilton product of two quaternions
+    """
     Q0 = q[0]*r[0] - dot(q[1:], r[1:])
     Q_1 = [q[0] * i for i in r[1:]]
     Q_2 = [r[0] * i for i in q[1:]]
@@ -81,21 +93,34 @@ def q_prod(q, r):
     return np.concatenate(([Q0], Q_))
 
 def q_norm(q):
+    """
+    Find the norm of a quaternion
+    """
     Q = [q[0], q[1]*1j, q[2]*1j, q[3]*1j]
     QC = [q[0], q[1]*-1j, q[2]*-1j, q[3]*-1j]
     return np.dot(Q, QC).real
 
 def spc2bod(q, x):
+    """
+    Convert a quaternion from the space system to the body system
+    """
     assert len(q) == len(x) == 4
     qc = [q[0], -q[1], -q[2], -q[3]]
     return q_prod(qc, q_prod(x, q))
 
 def bod2spc(q, X):
+    """
+    Convert a quaternion from the body system to the space system
+    """
     assert len(q) == len(X) == 4
     qc = [q[0], -q[1], -q[2], -q[3]]
     return q_prod(q, q_prod(X, qc))
 
 def initialise():
+    """
+    Return a vector of initial values to use with the simulation
+    """ 
+
     #Initial values for the positions and velocities, from HORIZONS on 2005-09-25
     T_r_0 = [-4.088407843090480E-03 *AU,
              -6.135746299499617E-03 *AU,
@@ -128,6 +153,7 @@ def initialise():
     H_wisdom_0 = wis(H_euler_0)
     H_anom_0 = 2.780523844083934E+02
 
+    # Pure quaternion from the directional cosines
     H_q_0 = [0.0, 0.0, 0.0, 0.0]
     H_q_0[1:] = dircos(H_wisdom_0, H_anom_0)
 
@@ -135,21 +161,21 @@ def initialise():
     return T_r_0 + H_r_0 + T_v_0 + H_v_0 + H_omega_0 + H_q_0
 
 def rowdot(v1, v2):
+    """
+    Find the row-wise dot product of two arrays of 3-vectors
+    """
     return np.einsum('ij, ij->i', v1, v2)
 
 def dfdot(df1, df2):
+    """
+    Find the row-wise dot product of two DataFrames of 3-vectors
+    """
     return pd.Series(np.einsum('ij, ij->i', df1, df2), index=df1.index)
 
-def eulerderivs(wisdom, omega):
-    """Calculate the time-derivatives of the euler angles due to ang. vel."""
-    assert len(wisdom) == len(omega) == 3
-    theta, phi, psi = wisdom[0:3]
-    Dtheta = (omega[0]*sin(psi) + omega[1]*cos(psi))/sin(phi)
-    Dphi = omega[0]*cos(psi) - omega[1]*sin(psi)
-    Dpsi = omega[2] - Dtheta*cos(phi)
-    return [Dtheta, Dphi, Dpsi]
-
 def flattenacc(pos, R, J2):
+    """
+    Calculate the acceleration due to flattening given the J2-term
+    """
     r = norm(pos)
     theta = acos(pos[2]/r)
     phi = atan2(pos[1],pos[0])
@@ -162,34 +188,41 @@ def flattenacc(pos, R, J2):
     return np.multiply(3*J2*G*R**2/r**4, [x, y, z])
 
 def f(y, t0, titanic):
-    """Vector of Titan's velocity, Hyperion's velocity, T's acc, H's acc"""
+    """
+    Derivative Function: Return the necessary d/dt values when called by the
+    integrator function in drive()
+    """
+    # First, split y into variables for the vectors it contains
     [T_r, H_r, T_v, H_v, H_omega] = \
     [y[i:i+3] for i in range(0, len(y)-4, 3)]
     H_q = y[-4:]
 
+    # Taking the norm of Hyperion's position vector and separation from Titan
+    # now saves calculating it repeatedly later.
     H_r_ = norm(H_r)
     HT_sep = H_r - T_r
     HT_sep_ = norm(HT_sep)
 
+    # Assign the flattening accelerations on Titan and Hyperion
     ST_flat = flattenacc(T_r, S_R, S_J2)
-    assert acos(dot(ST_flat, -T_r)/(norm(ST_flat)*norm(T_r))) <= pi/2
     SH_flat = flattenacc(H_r, S_R, S_J2)
-    assert acos(dot(SH_flat, -H_r)/(norm(SH_flat)*norm(H_r))) <= pi/2
     TH_flat = flattenacc(HT_sep, T_R, T_J2)
-    assert acos(dot(TH_flat, -HT_sep)/(norm(TH_flat)*norm(HT_sep))) <= pi/2
 
+    # Equations of translational motion for T and H
     T_a = -G * (S_m * T_r) / norm(T_r)**3 + ST_flat
     H_a = -G * ((S_m * H_r)/norm(H_r)**3 + \
           (T_m * HT_sep)/norm(HT_sep)**3) + \
           SH_flat + TH_flat
 
+    # Read the directional cosines for Hyperion's principal axes w.r.t. Saturn
+    # straight off the quaternion, and calculate them w.r.t. Titan
     H_dircos = H_q[1:]
     HT_dircos = [HT_sep[i]/HT_sep_ for i in range(0,3)]
 
-    H_qdot = [(1/2)*i for i in q_prod(bod2spc(H_q,
-        np.concatenate(([0.0], H_omega))), H_q)]
+    # Quaternion's EoM
+    H_qdot = q_prod(bod2spc(H_q, np.concatenate(([0.0], H_omega))), H_q) / 2
 
-    # Include the influence of titan on the rotation of Hyperion. Or don't.
+    # Include the influence of titan on the rotation of Hyperion. Or don't
     if titanic:
         HT_alpha = [(3*G*T_m/HT_sep_**3)*HT_dircos[1]*HT_dircos[2],
                     (3*G*T_m/HT_sep_**3)*HT_dircos[0]*HT_dircos[2],
@@ -197,6 +230,7 @@ def f(y, t0, titanic):
     else:
         HT_alpha = [0.0, 0.0, 0.0]
 
+    # Equation of motion for angular acceleration about H's principal axes.
     H_alpha = [H_BCA*(H_omega[1]*H_omega[2] - \
                    (3*G*S_m/H_r_**3)*H_dircos[1]*H_dircos[2] - HT_alpha[0]),
                H_CAB*(H_omega[0]*H_omega[2] - \
@@ -204,36 +238,60 @@ def f(y, t0, titanic):
                H_ABC*(H_omega[0]*H_omega[1] - \
                    (3*G*S_m/H_r_**3)*H_dircos[0]*H_dircos[1] - HT_alpha[2])]
 
-    vec = np.concatenate((T_v, H_v, T_a, H_a, H_alpha, H_qdot))
-    return vec
+    return np.concatenate((T_v, H_v, T_a, H_a, H_alpha, H_qdot))
 
 def drive(t_f=160, dt=0.001, chunksize=10000, titanic=True, path='output.h5'):
+    """
+    Run the actual integration!
+    Just calling drive() takes the sim for a quick (160-day) spin
+    t_f: Total simulation time (days)
+    dt: Simulation timestep (days)
+    chunksize: Size of chunks (timesteps, NOT NECESSARILY DAYS)
+    titanic: Whether sim includes the influence of Ttian on the chaotic
+        rotation of Hyperion (bool)
+    path: Filepath to save output HDF5 file to (str)
+    """
+
     print("Running simulation to {} days in chunks of {:.0f} days."\
         .format(t_f, chunksize*dt), flush=1)
     print("Including" if titanic else "Ignoring",
         "the influence of Titan on the chaotic rotation of Hyperion.", flush=1)
-    start = perf_counter()
+    start = perf_counter() # Used to track time taken by entire sim
     y0 = initialise()
+
 
     t = np.arange(0, t_f, dt)
     assert len(t) % chunksize == 0, \
         "Total number of timesteps must divide evenly into chunks"
 
+    # Create the column headings for the output DataFrame. quants is is a list
+    # of 1st-level column labels, comps a list of subcolumn labels.
     quants = np.append(np.repeat(('T_r', 'H_r','T_v', 'H_v', 'H_omega'), 3),
                        np.repeat(('H_q'), 4))
     comps = np.append(np.tile(('x', 'y', 'z'), 4), # Cartesian elements
                       ('1', '2', '3', # H_omega
                        '0', '1', '2', '3')) # H_q
     
+    # Start the DataFrame off with the initialisation vector so we have
+    # something to save.
     df0 = pd.DataFrame(columns=[quants, comps], index=[0.0], dtype=np.float64)
     df0.iloc[0] = y0
     with pd.HDFStore(path) as store:
-        store.put('sim', df0, format='t', append=False)
+        store.put('sim', df0, format='t', append=False) # t makes it appendable
+        # trange() is a drop-in replacement for range() that renders a lovely
+        # progress bar as we work through the range. 
         for i in trange(0, len(t), chunksize, unit='chunk', leave=1):
+            # The first time in the range given to odeint() must be the time on
+            # y0. Because of this, each chunk's first row is the last element
+            # of the previous chunk. Of course we then need an exception for
+            # the first run, hence the ternary conditional in the t[] argument
             r = odeint(f, y0,
                        t[i if i==0 else i-1:i+chunksize],
                        (titanic,))
             y0 = r[-1]
+            # We don't want to save the overlapping terms, though, so the
+            # beginning of the slice on t used here is shifted by one element
+            # from the one used for the integration.
             df = pd.DataFrame(
                 r[1:],
                 index=t[i+1 if i==0 else i:i+chunksize],
@@ -247,23 +305,48 @@ def drive(t_f=160, dt=0.001, chunksize=10000, titanic=True, path='output.h5'):
     print("\nSimulation successfully completed in {:.2f}s.".format(end-start))
 
 def sep(store, a='H', b='T', key=None):
+    """
+    Calculate and save series of separation vectors between two bodies labelled
+    by a and b
+    """
+    # Use body label strings to automatically name the table we store this in.
     if key is None: key = 'analysis/%s%ssep' % (a,b)
+    # We here use string interpolation with the body labels to determine which
+    # column in the sim table we're pulling data from. My gut says using string 
+    # interp'n for this purpose is deeply wrong, but my head can't think of
+    # a better way to do it. Expect to see this several more times
     df_sep = store.sim['%s_r' % a] - store.sim['%s_r' % b]
     store.put(key, df_sep)
     return store.select(key)
 
 def ecc(store, body, key=None):
+    """
+    Calculate and save series of eccentricity vectors for the given body.
+    Returns a reference to the series in the HDFStore.
+    """
+    # Use the body label str to automatically name the table we store this in.
     if key is None: key = 'analysis/%secc' % body
+    # see comment in sep() for what the percents are doing here
     pos = store.sim['%s_r' % body]
+    # This is the highest-performance way I've found to produce the norm of
+    # every row in a dataframe.
     pos_ = np.sqrt(np.square(pos).sum(axis=1))
     vel = store.sim['%s_v' % body]
+    # Now we're using string interpolation to assign variables! May God have
+    # mercy on my soul.
     m = eval('%s_m' % body)
     df_ecc = cross(vel, cross(pos, vel))/(G*(S_m+m)) - pos.div(pos_, axis=0)
     store.put(key, df_ecc)
     return store.select(key)
 
 def semi_major(store, body, key=None):
+    """
+    Calculate and save series of instantaneously-calculated semi-major axis
+    values for the given body
+    Returns a reference to the series in the HDFStore.
+    """
     if key is None: key = 'analysis/%ssma' % body
+    # see comment in sep() for what the percents are doing here
     pos = store.sim['%s_r' % body]
     pos = np.sqrt(np.square(pos).sum(axis=1))
     vel = store.sim['%s_v' % body]
@@ -274,27 +357,44 @@ def semi_major(store, body, key=None):
     return store.select(key)
 
 def anom(store, body, e, key=None):
+    """
+    Calculate and save series of true anomalies for given body and
+    instantaneous eccentricity vectors e.
+    Returns a reference to the series in the HDFStore.
+    """
     if key is None: key = 'analysis/%stra' % body
+    # see comment in sep() for what the percents are doing here
     pos = store.sim['%s_r'%body]
     pos_ = np.sqrt(np.square(pos).sum(axis=1))
     vel = store.sim['%s_v'%body]
     e_ = np.sqrt(np.square(e).sum(axis=1))
     df_tra = np.arccos(dfdot(e, pos)/(e_*pos_))
-    # This ought to correct the signs
+    # Correct the signs on the true anomalies that need it. Query the DF for
+    # relevant rows, then replace each one with 2pi minus itself.
     df_tra[dfdot(pos, vel) < 0] = df_tra[dfdot(pos, vel) < 0]\
         .apply(lambda x:2*pi-x)
     store.put(key, df_tra)
     return store.select(key)
 
 def meanmot(store, body, sma, key=None):
+    """
+    Calculate and save series of instantaneously-calculated mean motions for
+    given body and semi-major axis values sma.
+    Returns a reference to the series in the HDFStore.
+    """
     if key is None: key = 'analysis/%stra'%body
     mu = G * (S_m + eval('%s_m'%body))
     df_mm = np.sqrt(mu/sma**3)/(2*pi)
     store.put(key, df_mm)
     return store.select(key)
 
-def orbits(path='output.h5'):
-
+def orbits(path='output.h5', actual_seps=False):
+    """
+    Display readout showing orbital paths, basic stats, H-T separations over
+    time and values of quaternion elements
+    actual_seps: Whether we plot the actual instantaneous values of HT_sep, or
+        just the rolling average and range-band. (bool)
+    """
     with pd.HDFStore(path) as store:
 
         HT_sep = sep(store)
@@ -327,10 +427,17 @@ def orbits(path='output.h5'):
         seps.set_title('Magnitude of separation between Titan and Hyperion')
         seps.set_xlabel('days')
         seps.set_ylabel('km')
+        # Take the running mean of separations using convolution, then NaN out
+        # the values at either end so we don't get weird-looking lines.
         N = 64
         sep_mean = np.convolve(HT_sep_, np.ones((N,))/N, mode='same')
         sep_mean[:N//2] = np.nan
         sep_mean[-N//2:] = np.nan
+        # All this is a complicated way of making a band on the plot that 
+        # should span the (potentially shifting) range of values of HT_sep.
+        # Basically we find the value of the most extreme local extrema within
+        # +/-32 days of each point (which should cover each 3:4 resonant cycle)
+        # and plot the band between those max and min values at each timestep.
         sep_min = []
         sep_max = []
         sep_min_idx = argrelmin(HT_sep_, order=N//2, mode='clip')[0]
@@ -343,17 +450,25 @@ def orbits(path='output.h5'):
         seps.plot(HT_sep_index, sep_mean)
         seps.fill_between(HT_sep_index, sep_min, sep_max,
                           alpha=0.3)
-        # seps.plot(HT_sep_index, HT_sep_, alpha=0.5, color='#4C72B0')
+        # Plot the actual instantaneous values of HT_sep if we like
+        if actual_seps:
+            seps.plot(HT_sep_index, HT_sep_, alpha=0.5, color='#4C72B0')
 
         quaternions = plt.subplot(grid[3, 0:3])
         quaternions.set_title('Elements of rotation quaternion of Hyperion')
         H_q = store.sim['H_q']
         for i in range(4):
             quaternions.plot(H_q.index, H_q[str(i)])
+        quaternions.legend(('q₀', 'q₁', 'q₂', 'q₃'))
 
         info = plt.subplot(grid[0:2, -1])
         info.set_title('Info')
         info.axis('off')
+        # This bit's a bit of a mess, but that's because the matplotlib Table
+        # class is poorly written and even more poorly documented. We need a
+        # list of label strings and then a list of value strings. Can't find a
+        # good way of showing them lined up together in the code while still
+        # being able to format the values, so you'll just have to pretend.
         labels = [
             'Hyp init e',
             'Hyp final e',
@@ -379,16 +494,33 @@ def orbits(path='output.h5'):
                    cellText=text,
                    loc='upper right',
                    colWidths=[0.5]*2)
-        # Whoever wrote the Table class hates legibility. 
-        # Let's increase the row height:
+        # Whoever wrote this class seems to hate legibility, on top of their
+        # many other professional failings. Thankfully, someone magnificent
+        # human specimen on StackOverflow found out how to raise row heights:
         for c in tab.properties()['child_artists']:
             c.set_height(c.get_height()*2)
 
     plt.show()
 
 def q_svd(i, n, J=None, drop=1500, path='output.h5'):
+    """
+    Run Singular Value Decomposition on the quaternions. Currently eats all my
+    RAM. All of it. These aren't the old days where you'd deal with three
+    swap file purges before breakfast. If Mac OS X runs out of application
+    memory it does not fail gracefully, but instead stumbles around like a 
+    stunned cow until you put it out of its misery.
+    i: (0,1,2,3) The element of the quaternion we're looking at
+    n: Sample time (row length of trajectory matrix) (int, timesteps)
+    J: Lag time (how many steps ahead of the preceding row each row of the
+        trajectory matrix is) (int, timesteps)
+        Default is J = n, as suggested by Richard and Tom's book. J=1 is the
+        one suggested by Broomhead & King, but this seems to result in too
+        much correlation between successive rows.
+    drop: How many values at the beginning of the reconstructed timeseries to
+        disregard (int)
+    
+    """
 
-    #WORK IN PROGRESS
     if J is None: J = n
 
     with pd.HDFStore(path) as store:
@@ -424,3 +556,4 @@ def q_svd(i, n, J=None, drop=1500, path='output.h5'):
 
 if __name__ == "__main__":
     drive()
+    orbits()
