@@ -252,6 +252,10 @@ def drive(t_f=160, dt=0.001, chunksize=10000, titanic=True, path='output.h5'):
     path: Filepath to save output HDF5 file to (str)
     """
 
+    if t_f/dt % chunksize != 0:
+        print("Total number of timesteps must divide evenly into chunks.")
+        return
+
     print("Running simulation to {} days in chunks of {:.0f} days."\
         .format(t_f, chunksize*dt), flush=1)
     print("Including" if titanic else "Ignoring",
@@ -261,8 +265,6 @@ def drive(t_f=160, dt=0.001, chunksize=10000, titanic=True, path='output.h5'):
 
 
     t = np.arange(0, t_f, dt)
-    assert len(t) % chunksize == 0, \
-        "Total number of timesteps must divide evenly into chunks"
 
     # Create the column headings for the output DataFrame. quants is is a list
     # of 1st-level column labels, comps a list of subcolumn labels.
