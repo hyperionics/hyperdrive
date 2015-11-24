@@ -146,7 +146,9 @@ def initialise():
 
     # Combine initial conditions into a handy vector
     return T_r_0 + H_r_0 + T_v_0 + H_v_0 + \
-        H_euler_0 + H_wisdom_0 + H_omega_0 + H_omega_0 + H_q_0
+        H_euler_0 + H_omega_0 + H_omega_0 + H_q_0
+
+wise = 0
 
 def rowdot(v1, v2):
     """Row-wise dot product of two arrays"""
@@ -156,18 +158,17 @@ def dfdot(df1, df2):
     """Row-wise dot product of two dataframes"""
     return pd.Series(np.einsum('ij, ij->i', df1, df2), index=df1.index)
 
-def euler_derivs(euler, omega):
+def wisdom_derivs(wisdom, omega):
     """Calculate the time-derviatives of the euler angles due to ang.vel."""
-    theta, phi, psi = euler[0:3]
+    theta, phi, psi = wisdom[0:3]
     Dtheta = (omega[2]*cos(psi) - omega[0]*sin(psi))/cos(phi)
     Dphi = omega[2]*sin(psi) + omega[0]*cos(psi)
     Dpsi = omega[1] - Dtheta*sin(phi)
     return [Dtheta, Dphi, Dpsi]
 
-def wisdom_derivs(wisdom, omega):
+def euler_derivs(euler, omega):
     """Calculate the time-derivatives of the wisdom angles due to ang. vel."""
-    assert len(wisdom) == len(omega) == 3
-    theta, phi, psi = wisdom[0:3]
+    theta, phi, psi = euler[0:3]
     Dtheta = (omega[0]*sin(psi) + omega[1]*cos(psi))/sin(phi)
     Dphi = omega[0]*cos(psi) - omega[1]*sin(psi)
     Dpsi = omega[2] - Dtheta*cos(phi)
@@ -204,7 +205,9 @@ def flattenacc(pos, R, J2):
 
 def f(t0, y, titanic):
     """Vector of Titan's velocity, Hyperion's velocity, T's acc, H's acc"""
-    [T_r, H_r, T_v, H_v, H_euler, H_wisdom, H_a_omega, H_q_omega] = \
+    global wise
+
+    [T_r, H_r, T_v, H_v, H_angle, H_a_omega, H_q_omega] = \
     [y[i:i+3] for i in range(0, len(y)-4, 3)]
     H_q = y[-4:]
 
@@ -228,16 +231,28 @@ def f(t0, y, titanic):
     anom = acos(dot(ecc, H_r)/(norm(ecc)*norm(H_r)))
     if dot(H_r, H_v) < 0: anom = 2*pi - anom
 
-    H_euler = np.arctan2(np.sin(H_euler), np.cos(H_euler))
-    H_wisdom = np.arctan2(np.sin(H_wisdom), np.cos(H_wisdom))
+    H_angle = np.arctan2(np.sin(H_angle), np.cos(H_angle))
 
-    if abs(cos(H_wisdom[1])) <= pi/4:
-        H_a_dircos = euler_dircos(H_euler, anom)
+    if not wise:
+        if abs(sin(H_angle[1])) <= 0.1:
+            print('Switching to Wisdom!', flush=True)
+            H_angle = wis(H_angle)
+            wise = True
+            H_a_dircos = wisdom_dircos(H_angle, anom)
+            H_adot = wisdom_derivs(H_angle, H_a_omega)
+        else:
+            H_a_dircos = euler_dircos(H_angle, anom)
+            H_adot = euler_derivs(H_angle, H_a_omega)
     else:
-        H_a_dircos = wisdom_dircos(H_wisdom, anom)
-
-    H_edot = euler_derivs(H_euler, H_a_omega)
-    H_wdot = wisdom_derivs(H_wisdom, H_a_omega)
+        if abs(cos(H_angle[1])) <= 0.1:
+            print('Switching to Euler!', flush=True)
+            H_angle = eul(H_angle)
+            wise = False
+            H_a_dircos = euler_dircos(H_angle, anom)
+            H_adot = euler_derivs(H_angle, H_a_omega)
+        else:
+            H_a_dircos = wisdom_dircos(H_angle, anom)
+            H_adot = wisdom_derivs(H_angle, H_a_omega)
 
     H_q_dircos = H_q[1:]
     HT_dircos = [HT_sep[i]/HT_sep_ for i in range(0,3)]
@@ -267,7 +282,7 @@ def f(t0, y, titanic):
                H_ABC*(H_a_omega[0]*H_a_omega[1] - \
                    (3*G*S_m/H_r_**3)*H_a_dircos[0]*H_a_dircos[1] - HT_alpha[2])]
 
-    vec = np.concatenate((T_v, H_v, T_a, H_a, H_edot, H_wdot, H_a_alpha, H_q_alpha, H_qdot))
+    vec = np.concatenate((T_v, H_v, T_a, H_a, H_adot, H_a_alpha, H_q_alpha, H_qdot))
     return vec
 
 def drive(t_f=160, dt=0.001, chunksize=10000, titanic=True, path='output.h5'):
@@ -283,10 +298,10 @@ def drive(t_f=160, dt=0.001, chunksize=10000, titanic=True, path='output.h5'):
         "Total number of timesteps must divide evenly into chunks"
 
     quants = np.append(np.repeat(('T_r', 'H_r', 'T_v', 'H_v',
-                                  'H_euler', 'H_wisdom', 'H_a_omega', 'H_q_omega'), 3),
+                                  'H_angle', 'H_a_omega', 'H_q_omega'), 3),
                        np.repeat(('H_q'), 4))
     comps = np.concatenate((np.tile(('x', 'y', 'z'), 4), # Cartesian elements
-                      np.tile(('1', '2', '3'), 4), # Angular elements
+                      np.tile(('1', '2', '3'), 3), # Angular elements
                       np.array(('0', '1', '2', '3')))) # H_q
     
     df0 = pd.DataFrame(columns=[quants, comps], index=[0.0], dtype=np.float64)
@@ -299,16 +314,15 @@ def drive(t_f=160, dt=0.001, chunksize=10000, titanic=True, path='output.h5'):
 
     with pd.HDFStore(path) as store:
         store.put('sim', df0, format='t', append=False)
-        for i in trange(0, len(t), chunksize, unit='chunk', leave=1):
+        progress = tqdm(total=len(t)//dt, leave=1)
+        for i in range(0, len(t), chunksize):
             # r = odeint(f, y0,
             #            t[i if i==0 else i-1:i+chunksize],
             #            (titanic,))
             r = np.empty((0, len(quants)), float)
-            progress = tqdm(total=chunksize, desc="{}/{}".format(i//chunksize, len(t)//chunksize))
             for j in t[i if i==0 else i-1:i+chunksize]:
                 r = np.vstack((r, integrator.integrate(j+dt)))
-                progress.update()
-            progress.close()
+                if j % (chunksize//10): progress.update(chunksize//10)
             # y0 = r[-1]
             df = pd.DataFrame(
                 r[1:],
@@ -318,6 +332,7 @@ def drive(t_f=160, dt=0.001, chunksize=10000, titanic=True, path='output.h5'):
                 )
             store.append('sim', df)
             store.flush()
+        progress.close()
 
     end = perf_counter()
     print("\nSimulation successfully completed in {:.2f}s.".format(end-start))
