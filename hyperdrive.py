@@ -2,7 +2,7 @@ from scipy.integrate import odeint
 from scipy.linalg import svd, hankel
 from scipy.signal import argrelmin, argrelmax
 import numpy as np
-from numpy import dot, cross, pi
+from numpy import dot, cross, pi, isclose
 from numpy.linalg import norm
 import pandas as pd
 from pandas.tools.plotting import lag_plot
@@ -16,6 +16,9 @@ from itertools import repeat, chain
 from tqdm import trange
 from time import perf_counter
 import seaborn as sns
+import h5py
+from tables.nodes import filenode
+import dask.array as da
 from IPython.core.debugger import Tracer
 
 
@@ -504,7 +507,8 @@ def orbits(path='output.h5', actual_seps=False):
 
     plt.show()
 
-def q_svd(i, n, J=None, drop=1500, path='output.h5'):
+
+def q_svd(elem, n, J=None, drop=1500, path='output.h5'):
     """
     Run Singular Value Decomposition on the quaternions. Currently eats all my
     RAM. All of it. These aren't the old days where you'd deal with three
@@ -526,35 +530,57 @@ def q_svd(i, n, J=None, drop=1500, path='output.h5'):
     if J is None: J = n
 
     with pd.HDFStore(path) as store:
-        quat = store.sim.H_q[str(i)]
-        assert len(quat) % n == 0
-        normn = len(quat) - (n-1)
-        traj = normn**-1/2
-        hankel(quat, np.zeros(n))[::J]
-        U, s, V = svd(traj, False)
-        m = 2 # embedding dimension
-        S = np.diag(s[0:m])
-        print(s)
-        recon = dot(U[:,0:m], dot(S, V[0:m,:]))
+         with h5py.File(path, 'r+') as h5pystore:
 
-        fig = plt.figure(figsize=(4,4))
-        fig.set_tight_layout(True)
+            #tablestore.create_group('/', 'svd')
+            data = store.sim.H_q[str(elem)]
+            quat = data.as_matrix()
+            assert len(quat) % n == 0
+            rows = (len(quat) - (n-J)) // J
+            del h5pystore['/svd/traj']
+            traj = h5pystore.create_dataset('/svd/traj', (rows,n))
+            for i, j in zip(range(rows), range(0, len(quat), J)):
+                traj[i] = quat[j:j+n]
+            datraj = da.from_array(traj, chunks=(1000, n))
+            #normn = len(quat) - (n-1)
+            #traj = normn**-1/2 * hankel(quat, np.zeros(n))[::J]
+            U, s, V = da.linalg.svd(datraj)
+            m = 2 # embedding dimension
+            S = np.diag(s[0:m])
+            print(S)
+            recon = dot(U[:,0:m], dot(S, V[0:m,:]))
+            del h5pystore['/svd/U']
+            del h5pystore['/svd/s']
+            del h5pystore['/svd/V']
+            del h5pystore['/svd/recon']
+            h5pystore.create_dataset('/svd/U', data = U)
+            h5pystore.create_dataset('/svd/s', data = s)
+            h5pystore.create_dataset('/svd/V', data = V)
+            h5pystore.create_dataset('/svd/recon', data=recon)
 
-        axes = plt.plot(quat.index[::J], recon[:,0], quat.index[::J], quat[::J])
+    fig = plt.figure(figsize=(4,4))
+    fig.set_tight_layout(True)
 
-        embed = []
-        for i in range(m):
-            embed.append(np.zeros(traj.shape[0]-drop))
-            for j in range(traj.shape[0]-drop):
-                embed[i][j] = np.inner(V[:,i], traj[j])
+    axes = plt.plot(data.index[::J], recon[:,0], data.index[::J], data[::J])
 
-        figatt = plt.figure(figsize=(8,8))
-        figatt.set_tight_layout(True)
+    embed = []
+    for i in range(m):
+        embed.append(np.zeros(traj.shape[0]-drop))
+        for j in range(traj.shape[0]-drop):
+            embed[i][j] = np.inner(V[:,i], traj[j])
 
-        axesatt = figatt.add_subplot(111)
-        axesatt.plot(embed[0], embed[1])
+    figatt = plt.figure(figsize=(8,8))
+    figatt.set_tight_layout(True)
 
-        plt.show()
+    axesatt = figatt.add_subplot(111)
+    axesatt.plot(embed[0], embed[1])
+
+    plt.show()
+
+def h5check(path='output.h5'):
+    with pd.HDFStore(path) as store:
+        print(store)
+
 
 if __name__ == "__main__":
     drive()

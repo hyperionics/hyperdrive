@@ -1,6 +1,7 @@
 
 *.csv
 *.h5
+*.sublime-project
 
 # Created by https://www.gitignore.io/api/python
 
