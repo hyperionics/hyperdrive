@@ -21,7 +21,6 @@ from tables.nodes import filenode
 import dask.array as da
 from IPython.core.debugger import Tracer
 
-
 # Lengths in AU-converted-to-km, times in days, masses scaled to saturn (S_m)
 #
 # Most quantities are [Body]_[property], S being Saturn, T being Titan,
@@ -90,10 +89,10 @@ def q_prod(q, r):
     Find the Hamilton product of two quaternions
     """
     Q0 = q[0]*r[0] - dot(q[1:], r[1:])
-    Q_1 = [q[0] * i for i in r[1:]]
-    Q_2 = [r[0] * i for i in q[1:]]
+    Q_1 = np.multiply(q[0], r[1:])
+    Q_2 = np.multiply(r[0], q[1:])
     Q_ = np.add(np.add(Q_1, Q_2), cross(q[1:], r[1:]))
-    return np.concatenate(([Q0], Q_))
+    return np.insert(Q_, 0, Q0)
 
 def q_norm(q):
     """
@@ -196,8 +195,8 @@ def f(y, t0, titanic):
     integrator function in drive()
     """
     # First, split y into variables for the vectors it contains
-    [T_r, H_r, T_v, H_v, H_omega] = \
-    [y[i:i+3] for i in range(0, len(y)-4, 3)]
+    T_r, H_r, T_v, H_v, H_omega = \
+    [y[i:i+3] for i in range(0, len(y)-4, 3)] 
     H_q = y[-4:]
 
     # Taking the norm of Hyperion's position vector and separation from Titan
@@ -219,11 +218,11 @@ def f(y, t0, titanic):
 
     # Read the directional cosines for Hyperion's principal axes w.r.t. Saturn
     # straight off the quaternion, and calculate them w.r.t. Titan
-    H_dircos = H_q[1:]
-    HT_dircos = [HT_sep[i]/HT_sep_ for i in range(0,3)]
+    H_dircos = H_q[1:] / np.sin(np.arccos(H_q[0]))
+    HT_dircos = np.divide(HT_sep, HT_sep_)
 
     # Quaternion's EoM
-    H_qdot = q_prod(bod2spc(H_q, np.concatenate(([0.0], H_omega))), H_q) / 2
+    H_qdot = q_prod(bod2spc(H_q, np.insert(H_omega, 0, 0.0)), H_q) / 2
 
     # Include the influence of titan on the rotation of Hyperion. Or don't
     if titanic:
@@ -307,7 +306,7 @@ def drive(t_f=160, dt=0.001, chunksize=10000, titanic=True, path='output.h5'):
             store.flush()
 
     end = perf_counter()
-    print("\nSimulation successfully completed in {:.2f}s.".format(end-start))
+    print("\nSimulation successfully completed in {:.2f}s.\a".format(end-start))
 
 def sep(store, a='H', b='T', key=None):
     """
