@@ -63,6 +63,13 @@ def wis(euler):
         (cos(e_theta)*cos(e_phi)*cos(e_psi) - sin(e_theta)*sin(e_psi)))
     w_phi = atan(sin(e_phi)*cos(e_psi))
     w_psi = atan(-sin(e_phi)*sin(e_psi)/cos(e_phi))
+    if (w_phi > 0 and sin(e_phi)*cos(e_psi) < 0) or \
+        (w_phi < 0 and sin(e_phi)*cos(e_psi) > 0):
+        w_phi += np.pi
+    if cos(e_phi)/cos(w_phi) < 0: w_psi += np.pi
+    if (cos(e_phi)*cos(e_psi)*cos(e_theta) - sin(e_psi)*sin(e_theta))/\
+        cos(w_phi) < 0:
+        w_theta += np.pi
     return [w_theta, w_phi, w_psi]
 
 def eul(wisdom):
@@ -72,6 +79,11 @@ def eul(wisdom):
         (cos(w_theta)*sin(w_phi)*cos(w_psi) - sin(w_theta)*sin(w_psi)))
     e_phi = atan(1/(cos(w_phi)*cos(w_psi)))
     e_psi = atan(-cos(w_phi)*sin(w_psi)/sin(w_phi))
+    if cos(w_phi)*cos(w_psi) < 0: e_phi += np.pi
+    if sin(w_phi)/sin(e_phi) < 0: e_psi += np.pi
+    if (sin(w_phi)*cos(w_psi)*cos(w_theta)-sin(w_psi)*sin(w_theta))/\
+        sin(e_phi) < 0: 
+        e_theta += np.pi
     return [e_theta, e_phi, e_psi]
 
 def dircos(wisdom, anom):
@@ -203,6 +215,20 @@ def flattenacc(pos, R, J2):
         sin(theta)**2*cos(theta)
     return np.multiply(3*J2*G*R**2/r**4, [x, y, z])
 
+def switcheroo(angles, wise, bound):
+    if not wise:
+        if abs(sin(angles[1])) <= bound:
+            print(' E -> W', flush=1)
+            return wis(angles), True
+        else:
+            return angles, False
+    else:
+        if abs(cos(angles[1])) <= bound:
+            print(' W -> E', flush=1)
+            return eul(angles), False
+        else:
+            return angles, True
+
 def f(t0, y, titanic):
     """Vector of Titan's velocity, Hyperion's velocity, T's acc, H's acc"""
     global wise
@@ -234,27 +260,13 @@ def f(t0, y, titanic):
     H_angle = np.arctan2(np.sin(H_angle), np.cos(H_angle))
 
     if not wise:
-        if abs(sin(H_angle[1])) <= 0.1:
-            print('Switching to Wisdom!', flush=True)
-            H_angle = wis(H_angle)
-            wise = True
-            H_a_dircos = wisdom_dircos(H_angle, anom)
-            H_adot = wisdom_derivs(H_angle, H_a_omega)
-        else:
-            H_a_dircos = euler_dircos(H_angle, anom)
-            H_adot = euler_derivs(H_angle, H_a_omega)
+        H_a_dircos = euler_dircos(H_angle, anom)
+        H_adot = euler_derivs(H_angle, H_a_omega)
     else:
-        if abs(cos(H_angle[1])) <= 0.1:
-            print('Switching to Euler!', flush=True)
-            H_angle = eul(H_angle)
-            wise = False
-            H_a_dircos = euler_dircos(H_angle, anom)
-            H_adot = euler_derivs(H_angle, H_a_omega)
-        else:
-            H_a_dircos = wisdom_dircos(H_angle, anom)
-            H_adot = wisdom_derivs(H_angle, H_a_omega)
+        H_a_dircos = wisdom_dircos(H_angle, anom)
+        H_adot = wisdom_derivs(H_angle, H_a_omega)
 
-    H_q_dircos = H_q[1:]
+    H_q_dircos = H_q[1:] / np.sin(np.arccos(H_q[0]))
     HT_dircos = [HT_sep[i]/HT_sep_ for i in range(0,3)]
 
     H_qdot = [(1/2)*i for i in q_prod(bod2spc(H_q,
@@ -286,6 +298,8 @@ def f(t0, y, titanic):
     return vec
 
 def drive(t_f=160, dt=0.001, chunksize=10000, titanic=True, path='output.h5'):
+    global wise
+
     print("Running simulation to {} days in chunks of {:.0f} days."\
         .format(t_f, chunksize*dt), flush=1)
     print("Including" if titanic else "Ignoring",
@@ -299,7 +313,7 @@ def drive(t_f=160, dt=0.001, chunksize=10000, titanic=True, path='output.h5'):
 
     quants = np.append(np.repeat(('T_r', 'H_r', 'T_v', 'H_v',
                                   'H_angle', 'H_a_omega', 'H_q_omega'), 3),
-                       np.repeat(('H_q'), 4))
+                    np.repeat(('H_q'), 4))
     comps = np.concatenate((np.tile(('x', 'y', 'z'), 4), # Cartesian elements
                       np.tile(('1', '2', '3'), 3), # Angular elements
                       np.array(('0', '1', '2', '3')))) # H_q
@@ -322,7 +336,9 @@ def drive(t_f=160, dt=0.001, chunksize=10000, titanic=True, path='output.h5'):
             r = np.empty((0, len(quants)), float)
             for j in t[i if i==0 else i-1:i+chunksize]:
                 r = np.vstack((r, integrator.integrate(j+dt)))
-                if j % (chunksize//10): progress.update(chunksize//10)
+                angles = r[-1, 15:18] #euler/wisdom angles from last timestep
+                angles, wise = switcheroo(angles, wise, 0.1)
+                if j % (chunksize//5): progress.update(chunksize//5)
             # y0 = r[-1]
             df = pd.DataFrame(
                 r[1:],
@@ -335,7 +351,7 @@ def drive(t_f=160, dt=0.001, chunksize=10000, titanic=True, path='output.h5'):
         progress.close()
 
     end = perf_counter()
-    print("\nSimulation successfully completed in {:.2f}s.".format(end-start))
+    print("\n\aSimulation successfully completed in {:.2f}s.".format(end-start))
 
 def sep(store, a='H', b='T', key=None):
     if key is None: key = 'analysis/%s%ssep' % (a,b)
@@ -512,12 +528,15 @@ def angle_test(path='output.h5'):
         H_q_omega = store.sim['H_q_omega']
 
         a = plt.subplot(grid[0])
+        a.set_title("Angular velocity using Euler/Wisdom angles")
         a.plot(H_a_omega.index, H_a_omega)
 
         q = plt.subplot(grid[1])
+        q.set_title("Angular velocity using quaternions")
         q.plot(H_q_omega.index, H_q_omega)
 
         d = plt.subplot(grid[2])
+        d.set_title("Difference")
         d.plot(H_a_omega.index, H_a_omega - H_q_omega)
 
     plt.show()
