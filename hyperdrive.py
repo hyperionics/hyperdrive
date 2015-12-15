@@ -59,10 +59,13 @@ def wis(euler):
     """Transform from Euler angles to Wisdom angles"""
     assert len(euler) == 3
     e_theta, e_phi, e_psi = euler[0:3]
-    w_theta = atan((cos(e_theta)*sin(e_psi) + sin(e_theta)*cos(e_phi)*cos(e_psi))/\
-        (cos(e_theta)*cos(e_phi)*cos(e_psi) - sin(e_theta)*sin(e_psi)))
-    w_phi = atan(sin(e_phi)*cos(e_psi))
-    w_psi = atan(-sin(e_phi)*sin(e_psi)/cos(e_phi))
+    #w_theta = atan((cos(e_theta)*sin(e_psi) + sin(e_theta)*cos(e_phi)*cos(e_psi))/\
+    #    (cos(e_theta)*cos(e_phi)*cos(e_psi) - sin(e_theta)*sin(e_psi)))
+    #w_phi = atan(sin(e_phi)*cos(e_psi))
+    w_psi = atan(-tan(e_phi)*sin(e_psi))
+    w_phi = atan(-sin(w_psi)/tan(e_psi))
+    w_theta = (cos(e_phi)*tan(e_theta)+tan(e_psi))/(cos(e_phi)-tan(e_psi)*tan(e_theta))
+    #w_psi = atan(-sin(e_phi)*sin(e_psi)/cos(e_phi))
     if (w_phi > 0 and sin(e_phi)*cos(e_psi) < 0) or \
         (w_phi < 0 and sin(e_phi)*cos(e_psi) > 0):
         w_phi += np.pi
@@ -75,10 +78,13 @@ def wis(euler):
 def eul(wisdom):
     """Transform from Wisdom angles to Euler angles"""
     w_theta, w_phi, w_psi = wisdom[0:3]
-    e_theta = atan((cos(w_theta)*sin(w_psi) + sin(w_theta)*sin(w_phi)*cos(w_psi))/\
-        (cos(w_theta)*sin(w_phi)*cos(w_psi) - sin(w_theta)*sin(w_psi)))
-    e_phi = atan(1/(cos(w_phi)*cos(w_psi)))
-    e_psi = atan(-cos(w_phi)*sin(w_psi)/sin(w_phi))
+    #e_theta = atan((cos(w_theta)*sin(w_psi) + sin(w_theta)*sin(w_phi)*cos(w_psi))/\
+    #    (cos(w_theta)*sin(w_phi)*cos(w_psi) - sin(w_theta)*sin(w_psi)))
+    #e_phi = atan(1/(cos(w_phi)*cos(w_psi)))
+    #e_psi = atan(-cos(w_phi)*sin(w_psi)/sin(w_phi))
+    e_psi = atan(-sin(w_psi)/tan(w_phi))
+    e_phi = atan(-tan(w_psi)/sin(e_psi))
+    e_theta = (tan(w_psi)+sin(w_phi)*tan(w_theta))/(sin(w_phi)-tan(w_psi)*tan(w_theta))
     if cos(w_phi)*cos(w_psi) < 0: e_phi += np.pi
     if sin(w_phi)/sin(e_phi) < 0: e_psi += np.pi
     if (sin(w_phi)*cos(w_psi)*cos(w_theta)-sin(w_psi)*sin(w_theta))/\
@@ -328,7 +334,7 @@ def drive(t_f=160, dt=0.001, chunksize=10000, titanic=True, path='output.h5'):
 
     with pd.HDFStore(path) as store:
         store.put('sim', df0, format='t', append=False)
-        progress = tqdm(total=len(t)//dt, leave=1)
+        progress = tqdm(total=t_f, leave=1)
         for i in range(0, len(t), chunksize):
             # r = odeint(f, y0,
             #            t[i if i==0 else i-1:i+chunksize],
@@ -338,7 +344,6 @@ def drive(t_f=160, dt=0.001, chunksize=10000, titanic=True, path='output.h5'):
                 r = np.vstack((r, integrator.integrate(j+dt)))
                 angles = r[-1, 15:18] #euler/wisdom angles from last timestep
                 angles, wise = switcheroo(angles, wise, 0.1)
-                if j % (chunksize//5): progress.update(chunksize//5)
             # y0 = r[-1]
             df = pd.DataFrame(
                 r[1:],
@@ -348,6 +353,7 @@ def drive(t_f=160, dt=0.001, chunksize=10000, titanic=True, path='output.h5'):
                 )
             store.append('sim', df)
             store.flush()
+            progress.update(10)
         progress.close()
 
     end = perf_counter()
