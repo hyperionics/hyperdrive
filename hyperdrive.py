@@ -13,13 +13,17 @@ from mpl_toolkits.mplot3d import Axes3D
 from math import sqrt, sin, cos, tan, asin, acos, atan, atan2, copysign
 from functools import partial
 from itertools import repeat, chain
-from tqdm import trange
+from tqdm import trange, tqdm
 from time import perf_counter
 import seaborn as sns
 import h5py
 from tables.nodes import filenode
 import dask.array as da
+import dask.dataframe as dd
+from dask.dataframe.rolling import wrap_rolling
+import hashlib
 from IPython.core.debugger import Tracer
+from sympy.ntheory.factor_ import divisors
 
 # Lengths in AU-converted-to-km, times in days, masses scaled to saturn (S_m)
 #
@@ -189,7 +193,7 @@ def flattenacc(pos, R, J2):
         sin(theta)**2*cos(theta)
     return np.multiply(3*J2*G*R**2/r**4, [x, y, z])
 
-def f(y, t0, titanic):
+def f(y, t0, titanic, flat):
     """
     Derivative Function: Return the necessary d/dt values when called by the
     integrator function in drive()
@@ -206,9 +210,12 @@ def f(y, t0, titanic):
     HT_sep_ = norm(HT_sep)
 
     # Assign the flattening accelerations on Titan and Hyperion
-    ST_flat = flattenacc(T_r, S_R, S_J2)
-    SH_flat = flattenacc(H_r, S_R, S_J2)
-    TH_flat = flattenacc(HT_sep, T_R, T_J2)
+    if flat:
+        ST_flat = flattenacc(T_r, S_R, S_J2)
+        SH_flat = flattenacc(H_r, S_R, S_J2)
+        TH_flat = flattenacc(HT_sep, T_R, T_J2)
+    else:
+        ST_flat = SH_flat = TH_flat = [0.0, 0.0, 0.0]
 
     # Equations of translational motion for T and H
     T_a = -G * (S_m * T_r) / norm(T_r)**3 + ST_flat
@@ -242,7 +249,8 @@ def f(y, t0, titanic):
 
     return np.concatenate((T_v, H_v, T_a, H_a, H_alpha, H_qdot))
 
-def drive(t_f=160, dt=0.001, chunksize=10000, titanic=True, path='output.h5'):
+
+def drive(t_f=160, dt=0.001, chunksize=10000, titanic=True, flat=True, nrw=False, keep=50, path='output.h5'):
     """
     Run the actual integration!
     Just calling drive() takes the sim for a quick (160-day) spin
@@ -257,6 +265,8 @@ def drive(t_f=160, dt=0.001, chunksize=10000, titanic=True, path='output.h5'):
     if t_f/dt % chunksize != 0:
         print("Total number of timesteps must divide evenly into chunks.")
         return
+    if t_f/dt % keep != 0 or chunksize % keep != 0:
+        print("Timesteps and chunksize should both be divisible by keep")
 
     print("Running simulation to {} days in chunks of {:.0f} days."\
         .format(t_f, chunksize*dt), flush=1)
@@ -264,10 +274,6 @@ def drive(t_f=160, dt=0.001, chunksize=10000, titanic=True, path='output.h5'):
         "the influence of Titan on the chaotic rotation of Hyperion.", flush=1)
     start = perf_counter() # Used to track time taken by entire sim
     y0 = initialise()
-
-
-    t = np.arange(0, t_f, dt)
-
     # Create the column headings for the output DataFrame. quants is is a list
     # of 1st-level column labels, comps a list of subcolumn labels.
     quants = np.append(np.repeat(('T_r', 'H_r','T_v', 'H_v', 'H_omega'), 3),
@@ -275,33 +281,46 @@ def drive(t_f=160, dt=0.001, chunksize=10000, titanic=True, path='output.h5'):
     comps = np.append(np.tile(('x', 'y', 'z'), 4), # Cartesian elements
                       ('1', '2', '3', # H_omega
                        '0', '1', '2', '3')) # H_q
+
+    ## Alternative columns for when we're just saving the angular bits
+    #nrw_quants = np.append(np.repeat(('H_omega'), 3), np.repeat(('H_q'), 4))
+    #nrw_comps = np.array(('1', '2', '3', '0', '1', '2', '3'))
+
+    #t = np.arange(0, t_f, dt)
     
     # Start the DataFrame off with the initialisation vector so we have
     # something to save.
     df0 = pd.DataFrame(columns=[quants, comps], index=[0.0], dtype=np.float64)
     df0.iloc[0] = y0
+    if nrw: df0 = df0[['H_omega', 'H_q']]
     with pd.HDFStore(path) as store:
         store.put('sim', df0, format='t', append=False) # t makes it appendable
         # trange() is a drop-in replacement for range() that renders a lovely
         # progress bar as we work through the range. 
-        for i in trange(0, len(t), chunksize, unit='chunk', leave=1):
+        for i in trange(0, int(t_f / dt), chunksize, unit='chunk', leave=1):
             # The first time in the range given to odeint() must be the time on
             # y0. Because of this, each chunk's first row is the last element
             # of the previous chunk. Of course we then need an exception for
             # the first run, hence the ternary conditional in the t[] argument
-            r = odeint(f, y0,
-                       t[i if i==0 else i-1:i+chunksize],
-                       (titanic,))
+            r, info = odeint(
+                f, y0,
+                np.linspace(0 if i==0 else (i-1)*dt, (i+chunksize)*dt, chunksize+(1 if i>0 else 0)),#t[0 if i==0 else i-1:i+chunksize],
+                (titanic, flat),
+                full_output=1
+                )
             y0 = r[-1]
+            jac = np.count_nonzero(info['mused']-1)
+            if jac: print('\n', jac, flush=1)
             # We don't want to save the overlapping terms, though, so the
             # beginning of the slice on t used here is shifted by one element
             # from the one used for the integration.
             df = pd.DataFrame(
-                r[1:],
-                index=t[i+1 if i==0 else i:i+chunksize],
+                r[::keep][1:],
+                index=np.arange(i*dt,(i+chunksize)*dt,keep*dt)[1 if i==0 else 0:],#index=t[i+1 if i==0 else i:i+chunksize], 
                 columns=[quants, comps],
                 dtype=np.float64
                 )
+            if nrw: df = df[['H_omega', 'H_q']]
             store.append('sim', df)
             store.flush()
 
@@ -392,7 +411,7 @@ def meanmot(store, body, sma, key=None):
     store.put(key, df_mm)
     return store.select(key)
 
-def orbits(path='output.h5', actual_seps=False):
+def orbits(path='output.h5', q=True, actual_seps=False):
     """
     Display readout showing orbital paths, basic stats, H-T separations over
     time and values of quaternion elements
@@ -402,8 +421,8 @@ def orbits(path='output.h5', actual_seps=False):
     with pd.HDFStore(path) as store:
 
         HT_sep = sep(store)
-        HT_sep_ = np.sqrt(np.square(HT_sep).sum(axis=1)).values[::1000]
-        HT_sep_index = np.array(HT_sep.index[::1000], dtype=int)
+        HT_sep_ = np.sqrt(np.square(HT_sep).sum(axis=1)).values
+        HT_sep_index = np.array(HT_sep.index, dtype=int)
         H_e = ecc(store, 'H')
         T_e = ecc(store, 'T')
         H_a = semi_major(store, 'H')
@@ -411,9 +430,9 @@ def orbits(path='output.h5', actual_seps=False):
         H_n = meanmot(store, 'H', H_a)
         T_n = meanmot(store, 'T', T_a)
 
-        fig = plt.figure(figsize=(8, 10))
+        fig = plt.figure(figsize=(8, 10 if q else 8))
         fig.set_tight_layout(True)
-        grid = gs.GridSpec(4, 3)
+        grid = gs.GridSpec(4 if q else 3, 3)
         plt.rcParams['axes.formatter.limits'] = [-5,5]
 
         orbits = plt.subplot(grid[0:2, 0:2])
@@ -433,7 +452,7 @@ def orbits(path='output.h5', actual_seps=False):
         seps.set_ylabel('km')
         # Take the running mean of separations using convolution, then NaN out
         # the values at either end so we don't get weird-looking lines.
-        N = 64
+        N = 1280
         sep_mean = np.convolve(HT_sep_, np.ones((N,))/N, mode='same')
         sep_mean[:N//2] = np.nan
         sep_mean[-N//2:] = np.nan
@@ -458,12 +477,13 @@ def orbits(path='output.h5', actual_seps=False):
         if actual_seps:
             seps.plot(HT_sep_index, HT_sep_, alpha=0.5, color='#4C72B0')
 
-        quaternions = plt.subplot(grid[3, 0:3])
-        quaternions.set_title('Elements of rotation quaternion of Hyperion')
-        H_q = store.sim['H_q']
-        for i in range(4):
-            quaternions.plot(H_q.index, H_q[str(i)])
-        quaternions.legend(('q₀', 'q₁', 'q₂', 'q₃'))
+        if q:
+            quaternions = plt.subplot(grid[3, 0:3])
+            quaternions.set_title('Elements of rotation quaternion of Hyperion')
+            H_q = store.sim['H_q']
+            for i in range(4):
+                quaternions.plot(H_q.index, H_q[str(i)])
+            quaternions.legend(('q₀', 'q₁', 'q₂', 'q₃'))
 
         info = plt.subplot(grid[0:2, -1])
         info.set_title('Info')
@@ -495,9 +515,9 @@ def orbits(path='output.h5', actual_seps=False):
             ]
         ]
         tab = info.table(rowLabels=labels,
-                   cellText=text,
-                   loc='upper right',
-                   colWidths=[0.5]*2)
+                         cellText=text,
+                         loc='upper right',
+                         colWidths=[0.5]*2)
         # Whoever wrote this class seems to hate legibility, on top of their
         # many other professional failings. Thankfully, someone magnificent
         # human specimen on StackOverflow found out how to raise row heights:
@@ -506,8 +526,61 @@ def orbits(path='output.h5', actual_seps=False):
 
     plt.show()
 
+def signchange(array):
+    '''
+    Takes an array of shape (2,), and returns whether or not there was a sign
+    change between them.
+    '''
+    assert len(array) == 2
+    a = array[0]
+    b = array[1]
+    if a < 0 and b >= 0:
+        return True
+    elif a >= 0 and b < 0:
+        return True
+    else:
+        return False
 
-def q_svd(elem, n, J=None, drop=1500, path='output.h5'):
+def sect(var1, elem1, var2, elem2, var3, elem3, val=0, step=1,
+         leaf1='sim', leaf2='sim', leaf3='sim', threed=1,
+         path='output.h5'):
+    with pd.HDFStore(path) as store:
+        nrows = store[leaf1].shape[0]
+        #xcols = pd.MultiIndex.from_tuples([(var1, elem1)])
+        #ycols = pd.MultiIndex.from_tuples([(var2, elem2)])
+        #zcols = pd.MultiIndex.from_tuples([(var3, elem3)])
+        #x = dd.from_pandas(store[leaf1][var1][elem1], nrows//100)
+        #y = dd.from_pandas(store[leaf1][var2][elem2], nrows//100)
+        #z = dd.from_pandas(store[leaf1][var3][elem3], nrows//100)        
+        x = store[leaf1][var1][elem1]
+        y = store[leaf2][var2][elem2]
+        if leaf3 == 'sim': 
+            z = store[leaf3][var3][elem3]
+        else:
+            z = store[leaf3]
+        #rolling_signchange = partial(pd.rolling_apply, func=signchange)
+        #dask_signcheck = wrap_rolling(rolling_signchange)
+        #idx = dask_signcheck(z, 2)
+        #Tracer()()
+
+        idx = np.sign((z-val).shift()) != np.sign(z - val)
+        #idx.index = z.index
+        #idx = dd.from_pandas(idx, parts)
+        print('Plotting!', flush=1)
+        fig = plt.figure(figsize=(8,8))
+        fig.set_tight_layout(True)
+        if not threed:
+            ax = fig.add_subplot(111)
+            ax.scatter(x[idx][::step], y[idx][::step], marker='+')
+        else:
+            ax = fig.add_subplot(111, projection='3d')
+            ax.scatter(x[::step], y[::step], z[::step], marker='+')
+
+        plt.show()
+ 
+
+
+def h_svd(elem, n, J=None, m=3, theta=0, drop=1500, step=1, force=0, quant='omega', path='output.h5'):
     """
     Run Singular Value Decomposition on the quaternions. Currently eats all my
     RAM. All of it. These aren't the old days where you'd deal with three
@@ -530,51 +603,111 @@ def q_svd(elem, n, J=None, drop=1500, path='output.h5'):
 
     with pd.HDFStore(path) as store:
          with h5py.File(path, 'r+') as h5pystore:
-
-            #tablestore.create_group('/', 'svd')
-            data = store.sim.H_q[str(elem)]
+            data = store.sim.H_omega[str(elem)]
             quat = data.as_matrix()
             assert len(quat) % n == 0
             rows = (len(quat) - (n-J)) // J
-            del h5pystore['/svd/traj']
-            traj = h5pystore.create_dataset('/svd/traj', (rows,n))
-            for i, j in zip(range(rows), range(0, len(quat), J)):
-                traj[i] = quat[j:j+n]
+            params = store.sim.tail(1).to_string() + \
+                ''.join(map(str,[elem, n, J, m]))
+            digest = hashlib.md5(params.encode()).hexdigest()
+            if force or ('/svd/traj' not in h5pystore or \
+                h5pystore['/svd/traj'].attrs["digest"] != np.string_(digest)):
+                    print("Constructing new trajectory matrix...", flush=1)
+                    if '/svd/traj' in h5pystore: del h5pystore['/svd']
+                    traj = h5pystore.create_dataset('/svd/traj', (rows,n))
+                    if J != n:
+                        progress = tqdm(total=rows, leave=1)
+                        for i, j in zip(range(rows), range(0, len(quat), J)):
+                            traj[i] = quat[j:j+n]
+                            progress.update()
+                        progress.close()
+                    else:
+                        traj[:] = quat.reshape((rows, n))
+                    traj.attrs["digest"] = np.string_(digest)
+                    print()
+            else:
+                print("Reusing previous trajectory matrix...", flush=1)
+                traj = h5pystore.require_dataset(
+                    '/svd/traj', (rows, n), np.float32
+                    )
+            print("Constructing OoC trajectory and covariance matrices...", flush=1)
             datraj = da.from_array(traj, chunks=(1000, n))
+            cov = da.dot(datraj.transpose(), datraj)
             #normn = len(quat) - (n-1)
             #traj = normn**-1/2 * hankel(quat, np.zeros(n))[::J]
-            U, s, V = da.linalg.svd(datraj)
-            m = 2 # embedding dimension
+            print("Running SVD...", flush=1)
+            U, s, V = da.linalg.svd(cov)
             S = np.diag(s[0:m])
+            #return(S[0,0], S[1,1], S[2,2])
+            #print(traj.shape, cov.shape, U.shape, s.shape, V.shape)
             print(S)
-            recon = dot(U[:,0:m], dot(S, V[0:m,:]))
-            del h5pystore['/svd/U']
-            del h5pystore['/svd/s']
-            del h5pystore['/svd/V']
-            del h5pystore['/svd/recon']
-            h5pystore.create_dataset('/svd/U', data = U)
-            h5pystore.create_dataset('/svd/s', data = s)
-            h5pystore.create_dataset('/svd/V', data = V)
-            h5pystore.create_dataset('/svd/recon', data=recon)
+            #recon = dot(U[:,0:m], dot(S, V[0:m,:]))
+            #print("Writing U", flush=1)
+            #h5pystore.create_dataset('/svd/U', data=U)
+            ##print("Writing s", flush=1)
+            ##h5pystore.create_dataset('/svd/s', data = S)
+            #print("Writing V", flush=1)
+            #h5pystore.create_dataset('/svd/V', data=V)
+            #print("Writing cov", flush=1)
+            #h5pystore.create_dataset('/svd/cov', data=cov)
 
-    fig = plt.figure(figsize=(4,4))
+            print("Taking Poincaré sections and projecting dataset...", flush=1)
+            #plane_normal = np.cross(U[:,1], U[:,2])
+            #plane_normal /= np.norm(plane_normal)
+            x = dot(traj, U[:,0])
+            y = dot(traj, U[:,1])
+            z = dot(traj, U[:,2])
+            idx = np.sign(np.roll(z, 1)) != np.sign(z)
+            #idx = np.roll(z, 1) > z
+            #idx = da.isclose(dist, 0)
+
+            print("Plotting!", flush=1)
+            fig = plt.figure(figsize=(8,8))
+            fig.set_tight_layout(True)
+            ax = fig.add_subplot(111)
+            ax.scatter(traj[:,0][idx][::step], np.roll(traj[:,0][idx][::step], 1), marker='+')
+            #ax.set_title("Poincare section of omega{} through plane of first two singular vectors".format(str(elem)))
+
+            #embed = []
+            #for i in range(m):
+            #    embed.append(np.zeros(traj.shape[0]-drop))
+            #    for j in range(traj.shape[0]-drop):
+            #        embed[i][j] = np.inner(V[:,i], traj[j])
+
+            #figatt = plt.figure(figsize=(8,8))
+            #figatt.set_tight_layout(True)
+
+            #axesatt = figatt.add_subplot(111)
+            #axesatt.plot(embed[0], embed[1])
+
+            plt.show()
+
+def singspec(elem, path='output.h5'):
+    with pd.HDFStore(path) as store:
+        N = len(store.sim)
+        divs = divisors(N)[4:12]
+
+    vals = np.zeros((len(divs), 3))
+    for i in range(len(divs)):
+        print(divs[i], flush=1)
+        vals[i] = h_svd(elem, divs[i], path=path)
+
+    fig = plt.figure(figsize=(8,8))
     fig.set_tight_layout(True)
+    grid = gs.GridSpec(3, 1)
 
-    axes = plt.plot(data.index[::J], recon[:,0], data.index[::J], data[::J])
+    first = plt.subplot(grid[0])
+    first.semilogx(divs, vals[:,0])
 
-    embed = []
-    for i in range(m):
-        embed.append(np.zeros(traj.shape[0]-drop))
-        for j in range(traj.shape[0]-drop):
-            embed[i][j] = np.inner(V[:,i], traj[j])
+    second = plt.subplot(grid[1])
+    second.semilogx(divs, vals[:,1])
 
-    figatt = plt.figure(figsize=(8,8))
-    figatt.set_tight_layout(True)
-
-    axesatt = figatt.add_subplot(111)
-    axesatt.plot(embed[0], embed[1])
+    third = plt.subplot(grid[2])
+    third.semilogx(divs, vals[:,2])
 
     plt.show()
+
+
 
 def h5check(path='output.h5'):
     with pd.HDFStore(path) as store:
