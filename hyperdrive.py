@@ -48,12 +48,12 @@ T_m = 2.367E-4
 H_m = 9.8E-9
 
 # Radii and Js
-# Titan J2 from Iess and R from Zebker
-T_J2 = 31.808E-6
-T_R = 2574.91
-# Saturn J2 form Jacobson and R from NSSDC (Nasa)
-S_J2 = 16299E-6
-S_R = 60268
+# Titan J2, R from Iess
+T_J2 = 34.462E-6
+T_R = 2575
+# Saturn J2, R from Jacobson
+S_J2 = 16290.71E-6
+S_R = 60330
 
 # Dimensionless MoI
 H_A = 0.314
@@ -178,20 +178,24 @@ def dfdot(df1, df2):
     """
     return pd.Series(np.einsum('ij, ij->i', df1, df2), index=df1.index)
 
-def flattenacc(pos, R, J2):
+def flattenacc(pos, R, M, J2):
     """
     Calculate the acceleration due to flattening given the J2-term
     """
     r = norm(pos)
     theta = acos(pos[2]/r)
     phi = atan2(pos[1],pos[0])
-    x = (1/2) * (3*cos(theta)**2-1) * sin(theta) * cos(phi) + \
-        sin(theta)*cos(theta)**2
-    y = (1/2) * sin(theta) * sin(phi) * (3*cos(theta)**2-1) + \
-        sin(theta)*cos(theta)**2*sin(phi)
-    z = (1/2) * cos(theta) * (3*cos(theta)**2-1) - \
-        sin(theta)**2*cos(theta)
-    return np.multiply(3*J2*G*R**2/r**4, [x, y, z])
+
+    x = cos(theta)**2*cos(phi)*sin(theta)/r**4 + \
+        (cos(theta)**2-1)*cos(phi)*sin(theta)/(2*r**4)
+
+    y = cos(theta)**2*sin(phi)*sin(theta)/r**4 + \
+        (cos(theta)**2-1)*sin(phi)*sin(theta)/(2*r**4)
+
+    z = -sin(theta)**2*cos(theta)/r**4 + \
+        (cos(theta)**2-1)*cos(theta)/(2*r**4)
+
+    return np.multiply(-3 * G * M * R**2 * J2, [x, y, z])
 
 def f(y, t0, titanic, flat):
     """
@@ -211,9 +215,10 @@ def f(y, t0, titanic, flat):
 
     # Assign the flattening accelerations on Titan and Hyperion
     if flat:
-        ST_flat = flattenacc(T_r, S_R, S_J2)
-        SH_flat = flattenacc(H_r, S_R, S_J2)
-        TH_flat = flattenacc(HT_sep, T_R, T_J2)
+        ST_flat = flattenacc(T_r, S_R, S_m, S_J2)
+        SH_flat = flattenacc(H_r, S_R, S_m, S_J2)
+        TH_flat = flattenacc(HT_sep, T_R, T_m, T_J2)
+        #print(ST_flat, SH_flat, TH_flat)
     else:
         ST_flat = SH_flat = TH_flat = [0.0, 0.0, 0.0]
 
@@ -302,15 +307,12 @@ def drive(t_f=160, dt=0.001, chunksize=10000, titanic=True, flat=True, nrw=False
             # y0. Because of this, each chunk's first row is the last element
             # of the previous chunk. Of course we then need an exception for
             # the first run, hence the ternary conditional in the t[] argument
-            r, info = odeint(
+            r= odeint(
                 f, y0,
                 np.linspace(0 if i==0 else (i-1)*dt, (i+chunksize)*dt, chunksize+(1 if i>0 else 0)),#t[0 if i==0 else i-1:i+chunksize],
-                (titanic, flat),
-                full_output=1
+                (titanic, flat)
                 )
             y0 = r[-1]
-            jac = np.count_nonzero(info['mused']-1)
-            if jac: print('\n', jac, flush=1)
             # We don't want to save the overlapping terms, though, so the
             # beginning of the slice on t used here is shifted by one element
             # from the one used for the integration.
@@ -421,6 +423,7 @@ def orbits(path='output.h5', q=True, actual_seps=False):
     with pd.HDFStore(path) as store:
 
         HT_sep = sep(store)
+        HT_sep = HT_sep[HT_sep.index.values % 1 == 0]
         HT_sep_ = np.sqrt(np.square(HT_sep).sum(axis=1)).values
         HT_sep_index = np.array(HT_sep.index, dtype=int)
         H_e = ecc(store, 'H')
@@ -452,7 +455,7 @@ def orbits(path='output.h5', q=True, actual_seps=False):
         seps.set_ylabel('km')
         # Take the running mean of separations using convolution, then NaN out
         # the values at either end so we don't get weird-looking lines.
-        N = 1280
+        N = 64
         sep_mean = np.convolve(HT_sep_, np.ones((N,))/N, mode='same')
         sep_mean[:N//2] = np.nan
         sep_mean[-N//2:] = np.nan
