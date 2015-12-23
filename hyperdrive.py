@@ -187,13 +187,13 @@ def flattenacc(pos, R, M, J2):
     phi = atan2(pos[1],pos[0])
 
     x = cos(theta)**2*cos(phi)*sin(theta)/r**4 + \
-        (cos(theta)**2-1)*cos(phi)*sin(theta)/(2*r**4)
+        (3*cos(theta)**2-1)*cos(phi)*sin(theta)/(2*r**4)
 
     y = cos(theta)**2*sin(phi)*sin(theta)/r**4 + \
-        (cos(theta)**2-1)*sin(phi)*sin(theta)/(2*r**4)
+        (3*cos(theta)**2-1)*sin(phi)*sin(theta)/(2*r**4)
 
     z = -sin(theta)**2*cos(theta)/r**4 + \
-        (cos(theta)**2-1)*cos(theta)/(2*r**4)
+        (3*cos(theta)**2-1)*cos(theta)/(2*r**4)
 
     return np.multiply(-3 * G * M * R**2 * J2, [x, y, z])
 
@@ -225,8 +225,8 @@ def f(y, t0, titanic, flat):
     # Equations of translational motion for T and H
     T_a = -G * (S_m * T_r) / norm(T_r)**3 + ST_flat
     H_a = -G * ((S_m * H_r)/norm(H_r)**3 + \
-          (T_m * HT_sep)/norm(HT_sep)**3) + \
-          SH_flat + TH_flat
+          ((T_m * HT_sep)/norm(HT_sep)**3) + \
+          SH_flat + TH_flat) if titanic else [0,0,0]
 
     # Read the directional cosines for Hyperion's principal axes w.r.t. Saturn
     # straight off the quaternion, and calculate them w.r.t. Titan
